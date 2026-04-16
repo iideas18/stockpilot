@@ -98,6 +98,49 @@ def test_news_aggregator():
     assert "hackernews" in agg.platforms
 
 
+def test_news_aggregator_reads_platforms_from_env(monkeypatch):
+    """News aggregator should read default platforms from env-backed settings."""
+    from stockpilot.config import get_settings
+    from stockpilot.news.aggregator import NewsAggregator
+
+    monkeypatch.delenv("STOCKPILOT_NEWS_PLATFORMS", raising=False)
+    monkeypatch.setenv("NEWS_PLATFORMS", "hackernews, reddit")
+    get_settings.cache_clear()
+    try:
+        agg = NewsAggregator()
+        assert agg.platforms == ["hackernews", "reddit_finance"]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_news_settings_parse_comma_separated_env(monkeypatch):
+    """Settings loader should accept comma-separated env values for news platforms."""
+    from stockpilot.config import get_settings
+
+    monkeypatch.delenv("STOCKPILOT_NEWS_PLATFORMS", raising=False)
+    monkeypatch.setenv("NEWS_PLATFORMS", "hackernews, reddit")
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        assert settings.news.platforms == ["hackernews", "reddit_finance"]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_news_aggregator_explicit_platforms_override_env(monkeypatch):
+    """Explicit platforms should win over env defaults."""
+    from stockpilot.config import get_settings
+    from stockpilot.news.aggregator import NewsAggregator
+
+    monkeypatch.setenv("NEWS_PLATFORMS", "weibo")
+    get_settings.cache_clear()
+    try:
+        agg = NewsAggregator(platforms=["reddit"])
+        assert agg.platforms == ["reddit_finance"]
+    finally:
+        get_settings.cache_clear()
+
+
 def test_trading_engine():
     """Test trading engine components."""
     from stockpilot.trading.engine import (

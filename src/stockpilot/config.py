@@ -23,6 +23,34 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 load_dotenv(PROJECT_ROOT / ".env")
 
 
+_NEWS_PLATFORM_ALIASES = {
+    "reddit": "reddit_finance",
+}
+
+
+def _normalize_news_platforms(value: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    else:
+        raw_items = value
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        platform = str(item).strip().lower()
+        if not platform:
+            continue
+        platform = _NEWS_PLATFORM_ALIASES.get(platform, platform)
+        if platform not in seen:
+            normalized.append(platform)
+            seen.add(platform)
+
+    return normalized
+
+
 def _load_yaml_config() -> dict[str, Any]:
     config_path = CONFIG_DIR / "settings.yaml"
     if config_path.exists():
@@ -69,7 +97,7 @@ class DataSettings(BaseSettings):
 class NewsSettings(BaseSettings):
     enabled: bool = True
     crawl_interval_minutes: int = 30
-    platforms: list[str] = ["weibo", "douyin", "zhihu", "reddit", "hackernews"]
+    platforms: list[str] = Field(default_factory=lambda: ["weibo", "douyin", "zhihu", "reddit_finance", "hackernews"])
 
     reddit_client_id: str = Field(default="", alias="REDDIT_CLIENT_ID")
     reddit_client_secret: str = Field(default="", alias="REDDIT_CLIENT_SECRET")
@@ -109,7 +137,7 @@ class Settings:
         self.db = DatabaseSettings()
         self.llm = self._build_llm_settings()
         self.data = self._build_data_settings()
-        self.news = NewsSettings()
+        self.news = self._build_news_settings()
         self.notifications = NotificationSettings()
         self.trading = TradingSettings()
         self.api = APISettings()
@@ -136,6 +164,22 @@ class Settings:
             settings.cache_backend = cache_cfg["backend"]
         if "ttl_seconds" in cache_cfg:
             settings.cache_ttl_seconds = cache_cfg["ttl_seconds"]
+        return settings
+
+    def _build_news_settings(self) -> NewsSettings:
+        news_cfg = self._yaml.get("news", {})
+        settings = NewsSettings()
+        if "enabled" in news_cfg:
+            settings.enabled = news_cfg["enabled"]
+        if "crawl_interval_minutes" in news_cfg:
+            settings.crawl_interval_minutes = news_cfg["crawl_interval_minutes"]
+        env_platforms = os.getenv("STOCKPILOT_NEWS_PLATFORMS")
+        if env_platforms is None:
+            env_platforms = os.getenv("NEWS_PLATFORMS")
+        if env_platforms is not None:
+            settings.platforms = _normalize_news_platforms(env_platforms)
+        elif "platforms" in news_cfg:
+            settings.platforms = _normalize_news_platforms(news_cfg["platforms"])
         return settings
 
     @property

@@ -6,6 +6,7 @@ Fetches trending news from 10+ platforms. Ported from TrendRadar.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,6 +15,13 @@ from typing import Any
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+PLATFORM_ALIASES = {
+    "reddit": "reddit_finance",
+}
+
+PLATFORM_ENV_VARS = ("STOCKPILOT_NEWS_PLATFORMS", "NEWS_PLATFORMS")
 
 
 @dataclass
@@ -45,6 +53,46 @@ PLATFORMS = {
 }
 
 
+def _normalize_platforms(platforms: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for platform in platforms:
+        key = PLATFORM_ALIASES.get(platform.strip().lower(), platform.strip().lower())
+        if not key or key in seen:
+            continue
+        normalized.append(key)
+        seen.add(key)
+    return normalized
+
+
+def _load_platforms_from_env() -> list[str] | None:
+    for env_name in PLATFORM_ENV_VARS:
+        raw_value = os.getenv(env_name)
+        if raw_value is None:
+            continue
+        return _normalize_platforms(raw_value.split(","))
+    return None
+
+
+def _load_configured_platforms() -> list[str]:
+    env_platforms = _load_platforms_from_env()
+    if env_platforms is not None:
+        return env_platforms
+
+    try:
+        from stockpilot.config import get_settings
+
+        configured = get_settings().news.platforms
+    except Exception as exc:
+        logger.debug("Falling back to built-in news platforms: %s", exc)
+        configured = list(PLATFORMS.keys())
+
+    platforms = _normalize_platforms(configured)
+    if platforms:
+        return platforms
+    return list(PLATFORMS.keys())
+
+
 class NewsAggregator:
     """Aggregates news from multiple platforms.
 
@@ -60,7 +108,7 @@ class NewsAggregator:
         max_items_per_platform: int = 20,
         timeout: int = 10,
     ):
-        self.platforms = platforms or list(PLATFORMS.keys())
+        self.platforms = _normalize_platforms(platforms) if platforms is not None else _load_configured_platforms()
         self.keyword_filter = keyword_filter or []
         self.max_items = max_items_per_platform
         self.timeout = timeout
@@ -86,6 +134,7 @@ class NewsAggregator:
 
     def _fetch_platform(self, platform_key: str) -> list[NewsItem]:
         """Fetch from a single platform."""
+        platform_key = PLATFORM_ALIASES.get(platform_key.strip().lower(), platform_key.strip().lower())
         if platform_key not in PLATFORMS:
             return []
         config = PLATFORMS[platform_key]
