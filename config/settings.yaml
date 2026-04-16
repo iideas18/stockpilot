@@ -1,0 +1,195 @@
+# ═══════════════════════════════════════════════════════════════
+# StockPilot Master Configuration
+# ═══════════════════════════════════════════════════════════════
+
+app:
+  name: StockPilot
+  version: 0.1.0
+  env: development  # development | production
+  log_level: INFO
+
+# === Data Sources ===
+data:
+  primary_source: akshare  # Primary data provider for A-share market
+  cache:
+    backend: redis  # redis | sqlite | memory
+    ttl_seconds: 3600  # 1 hour default cache TTL
+    price_ttl_seconds: 300  # 5 min for real-time prices
+  adapters:
+    akshare:
+      enabled: true
+      markets: [a_share]
+    yfinance:
+      enabled: true
+      markets: [us, hk, global]
+    eastmoney:
+      enabled: true
+      markets: [a_share]
+      use_proxy: false
+    alpha_vantage:
+      enabled: false  # Requires API key
+      markets: [us]
+    tushare:
+      enabled: false  # Requires token
+      markets: [a_share]
+
+# === Technical Analysis ===
+analysis:
+  indicators:
+    - MACD
+    - KDJ
+    - RSI
+    - BOLL
+    - CCI
+    - ATR
+    - OBV
+    - SAR
+    - DMI
+    - ADX
+  pattern_recognition: true  # Enable K-line pattern detection
+  signal_thresholds:
+    strong_buy: 0.8
+    buy: 0.6
+    hold: 0.4
+    sell: 0.2
+    strong_sell: 0.0
+
+# === LLM Agents ===
+agents:
+  llm:
+    default_provider: openai
+    default_model: gpt-4o
+    analyst_model: gpt-4o-mini  # Cost optimization for analysts
+    debate_model: gpt-4o  # Full model for debates
+    temperature: 0.7
+    max_tokens: 4096
+    # Provider-specific config
+    providers:
+      openai:
+        models: [gpt-5.4, gpt-4.1, gpt-4o, gpt-4o-mini]
+      anthropic:
+        models: [claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-6]
+      google:
+        models: [gemini-3-pro-preview]
+      deepseek:
+        models: [deepseek-chat, deepseek-reasoner]
+      xai:
+        models: [grok-4-0709]
+      openrouter:
+        models: [z-ai/glm-4.5, z-ai/glm-4.5-air, qwen/qwen3-235b-a22b-thinking-2507]
+      azure_openai:
+        models: []  # Configure via AZURE_OPENAI_DEPLOYMENT
+      ollama:
+        models: [llama3, qwen2, deepseek-r1]
+  stats:
+    enabled: true  # Track LLM calls, tokens, tool usage
+  debate:
+    max_rounds: 3
+    enable_reflection: true
+  personas:
+    enabled: true
+    active_personas:
+      - warren_buffett
+      - charlie_munger
+      - cathie_wood
+      - michael_burry
+      - peter_lynch
+      - ben_graham
+      - nassim_taleb
+    active_analysts:
+      - technical_analyst
+      - fundamentals_analyst
+      - growth_analyst
+      - valuation_analyst
+      - sentiment_analyst
+      - news_sentiment_analyst
+  memory:
+    enabled: true
+    backend: sqlite  # sqlite | redis
+
+# === News & Trends ===
+news:
+  enabled: true
+  crawl_interval_minutes: 30
+  platforms:
+    - weibo
+    - douyin
+    - zhihu
+    - reddit
+    - hackernews
+  keyword_filter: config/frequency_words.txt
+  trend_scoring:
+    rank_weight: 0.6
+    frequency_weight: 0.3
+    hotness_weight: 0.1
+
+# === Notifications ===
+notifications:
+  enabled: false
+  channels:
+    telegram:
+      enabled: false
+    dingtalk:
+      enabled: false
+    email:
+      enabled: false
+    feishu:
+      enabled: false
+    wechat_work:
+      enabled: false
+  quiet_hours:
+    start: "22:00"
+    end: "08:00"
+
+# === Trading ===
+trading:
+  mode: paper  # paper | live
+  paper_trading:
+    initial_capital: 1000000
+    commission_rate: 0.0003
+  live_trading:
+    enabled: false
+    broker: gf
+    max_position_pct: 0.1  # Max 10% per position
+    daily_loss_limit_pct: 0.02  # Stop if 2% daily loss
+
+# === Backtesting ===
+backtesting:
+  default_start_date: "2023-01-01"
+  default_end_date: "2024-12-31"
+  initial_capital: 1000000
+  commission_rate: 0.0003
+  slippage_rate: 0.001
+
+# === Scheduler ===
+scheduler:
+  enabled: true
+  jobs:
+    data_collection:
+      cron: "0 18 * * 1-5"  # 6pm on trading days
+    indicator_calc:
+      cron: "30 18 * * 1-5"  # 6:30pm
+    pattern_scan:
+      cron: "0 19 * * 1-5"  # 7pm
+    news_crawl:
+      cron: "*/30 9-22 * * *"  # Every 30min 9am-10pm
+    agent_analysis:
+      cron: "0 20 * * 1-5"  # 8pm on trading days
+
+# === API Server ===
+api:
+  host: 0.0.0.0
+  port: 8000
+  cors_origins: ["http://localhost:3000", "http://localhost:5173"]
+  docs_url: /docs
+
+# === MCP Server ===
+mcp:
+  enabled: true
+  transport: stdio  # stdio | websocket
+  expose_tools:
+    - data_query
+    - analysis
+    - agent_analysis
+    - news_trends
+    - portfolio

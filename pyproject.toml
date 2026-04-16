@@ -1,0 +1,106 @@
+[tool.poetry]
+name = "stockpilot"
+version = "0.1.0"
+description = "AI-powered quantitative investment platform — unified data, analysis, LLM agents, news, trading & backtesting"
+authors = ["zy"]
+readme = "README.md"
+packages = [{include = "stockpilot", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+# === Data Layer ===
+akshare = ">=1.18.42"
+yfinance = ">=0.2.63"
+tushare = ">=1.4.21"
+requests = ">=2.32.4"
+beautifulsoup4 = ">=4.12.0"
+parsel = ">=1.10.0"
+
+# === Data Processing ===
+pandas = ">=2.3.0"
+numpy = ">=1.24.0"
+
+# === Technical Analysis ===
+TA-Lib = ">=0.4.28"
+stockstats = ">=0.6.5"
+
+# === ML/Quant ===
+# qlib = {optional = true}  # Install separately: pip install pyqlib
+
+# === LLM Agent Framework ===
+langgraph = ">=0.4.8"
+langchain = ">=0.3.81"
+langchain-core = ">=0.3.81"
+langchain-openai = ">=0.3.23"
+langchain-anthropic = ">=0.3.15"
+langchain-google-genai = ">=4.0.0"
+langchain-experimental = ">=0.3.4"
+
+# === Web Framework ===
+fastapi = ">=0.104.0"
+uvicorn = {extras = ["standard"], version = ">=0.24.0"}
+jinja2 = ">=3.1.0"
+sqlalchemy = ">=2.0.22"
+alembic = ">=1.12.0"
+pydantic = ">=2.4.0"
+pydantic-settings = ">=2.0.0"
+
+# === Database & Cache ===
+pymysql = ">=1.1.0"
+redis = ">=6.2.0"
+
+# === News & Notifications ===
+feedparser = ">=6.0.11"
+praw = ">=7.8.1"
+
+# === MCP Server ===
+fastmcp = ">=2.12.0"
+websockets = ">=13.0"
+
+# === Trading ===
+easytrader = {version = ">=0.23.0", optional = true}
+
+# === CLI & Visualization ===
+typer = ">=0.21.0"
+rich = ">=14.0.0"
+questionary = ">=2.1.0"
+rank-bm25 = ">=0.2.2"
+bokeh = ">=3.3.0"
+matplotlib = ">=3.9.0"
+plotly = ">=6.0.0"
+
+# === Config ===
+pyyaml = ">=6.0.0"
+python-dotenv = ">=1.0.0"
+
+[tool.poetry.extras]
+trading = ["easytrader"]
+# qlib = ["pyqlib"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.4.0"
+pytest-asyncio = ">=0.21.0"
+pytest-cov = ">=4.1.0"
+ruff = ">=0.1.0"
+httpx = ">=0.25.0"
+
+[tool.poetry.scripts]
+stockpilot = "stockpilot.cli:app"
+stockpilot-api = "stockpilot.api.main:start"
+stockpilot-mcp = "stockpilot.mcp.server:main"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

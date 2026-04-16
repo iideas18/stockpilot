@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StockPilot — Interactive Trading Workstation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/app.css">
+    <script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {50:"#eff6ff",300:"#93c5fd",400:"#60a5fa",500:"#3b82f6",600:"#2563eb",700:"#1d4ed8"},
+                        surface: {800:"#1e293b",900:"#0f172a",950:"#020617"},
+                    }
+                }
+            }
+        };
+    </script>
+</head>
+<body class="min-h-screen flex bg-surface-950 text-slate-100">
+
+<aside id="sidebar" class="w-56 bg-surface-900 border-r border-slate-800 flex flex-col flex-shrink-0 h-screen sticky top-0">
+    <div class="p-4 border-b border-slate-800">
+        <h1 class="text-xl font-bold text-brand-500 flex items-center gap-2">
+            <i class="fas fa-chart-line"></i>
+            <span class="sidebar-label">StockPilot</span>
+        </h1>
+        <p class="text-xs text-slate-500 mt-1 sidebar-label">Interactive trading workstation</p>
+    </div>
+
+    <nav class="flex-1 p-2 space-y-1">
+        <a href="#" data-page="dashboard" class="nav-item active"><i class="fas fa-tachometer-alt w-5"></i><span>概览</span></a>
+        <a href="#" data-page="analysis" class="nav-item"><i class="fas fa-chart-candlestick w-5"></i><span>分析工作台</span></a>
+        <a href="#" data-page="compare" class="nav-item"><i class="fas fa-scale-balanced w-5"></i><span>对比实验室</span></a>
+        <a href="#" data-page="backtest" class="nav-item"><i class="fas fa-flask w-5"></i><span>回测工作室</span></a>
+        <a href="#" data-page="agent" class="nav-item"><i class="fas fa-robot w-5"></i><span>Agent 工作区</span></a>
+        <a href="#" data-page="portfolio" class="nav-item"><i class="fas fa-wallet w-5"></i><span>组合工作室</span></a>
+        <a href="#" data-page="news" class="nav-item"><i class="fas fa-newspaper w-5"></i><span>资讯</span></a>
+    </nav>
+
+    <div class="p-3 border-t border-slate-800 text-xs text-slate-600 sidebar-footer-text">
+        <a href="/docs" target="_blank" rel="noopener noreferrer" class="hover:text-brand-500"><i class="fas fa-book"></i> API Docs</a>
+        <span class="float-right">v0.1.0</span>
+    </div>
+</aside>
+
+<main class="flex-1 flex flex-col min-h-screen overflow-hidden">
+    <header class="bg-surface-900 border-b border-slate-800 px-6 py-3 flex items-center gap-4 flex-shrink-0">
+        <div class="relative flex-1 max-w-md">
+            <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"></i>
+            <input id="search-input" type="text" placeholder="搜索股票 (代码或名称) · Ctrl/Cmd+K"
+                   class="w-full bg-surface-800 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-sm
+                          focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500">
+            <div id="search-dropdown" class="hidden absolute top-full left-0 right-0 mt-1 bg-surface-800
+                        border border-slate-700 rounded-xl shadow-xl z-50 max-h-72 overflow-y-auto"></div>
+        </div>
+
+        <div id="header-stock" class="hidden flex items-center gap-3">
+            <span id="header-symbol" class="text-brand-500 font-bold text-lg"></span>
+            <span id="header-name" class="text-slate-400 text-sm"></span>
+        </div>
+
+        <div class="hidden md:flex items-center gap-2 text-xs text-slate-500">
+            <span class="kbd">Ctrl/Cmd + K</span>
+            <span>快速搜索</span>
+        </div>
+    </header>
+
+    <section class="workspace-toolbar">
+        <div class="workspace-toolbar-row">
+            <span class="section-heading !mb-0">Workspace</span>
+            <span id="workspace-active-symbol" class="context-chip pill-muted">未选择标的</span>
+            <span id="workspace-active-market" class="pill pill-muted">a_share</span>
+            <button id="workspace-add-watchlist" class="mini-button"><i class="fas fa-star"></i> 关注</button>
+            <button id="workspace-add-compare" class="mini-button"><i class="fas fa-layer-group"></i> 对比</button>
+            <button id="workspace-add-basket" class="mini-button"><i class="fas fa-wallet"></i> 组合</button>
+            <button id="workspace-open-analysis" class="mini-button"><i class="fas fa-chart-line"></i> 去分析</button>
+            <button id="workspace-open-agent" class="mini-button"><i class="fas fa-robot"></i> 跑 Agent</button>
+        </div>
+        <div class="workspace-toolbar-row mt-3">
+            <span class="section-heading !mb-0">Recent</span>
+            <div id="workspace-recent-symbols" class="flex flex-wrap gap-2"></div>
+        </div>
+    </section>
+
+    <div class="workspace-shell">
+        <section class="page-scroll">
+            <div id="page-dashboard" class="page">
+                <h2 class="text-2xl font-bold mb-6">📊 平台概览</h2>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                    <div class="card">
+                        <div class="text-slate-400 text-sm mb-1">系统状态</div>
+                        <div id="dash-status" class="text-2xl font-bold text-emerald-400">在线</div>
+                    </div>
+                    <div class="card">
+                        <div class="text-slate-400 text-sm mb-1">策略数量</div>
+                        <div id="dash-strategies" class="text-2xl font-bold text-brand-500">—</div>
+                    </div>
+                    <div class="card">
+                        <div class="text-slate-400 text-sm mb-1">AI 人格</div>
+                        <div id="dash-personas" class="text-2xl font-bold text-purple-400">—</div>
+                    </div>
+                    <div class="card">
+                        <div class="text-slate-400 text-sm mb-1">关注列表</div>
+                        <div id="dash-watchlist-count" class="text-2xl font-bold text-amber-400">0</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                    <div class="card xl:col-span-2">
+                        <h3 class="text-lg font-semibold mb-3">使用方式</h3>
+                        <div class="space-y-2 text-sm text-slate-300">
+                            <p><span class="text-brand-400">1.</span> 先用搜索找到股票，系统会把它放进全局工作区。</p>
+                            <p><span class="text-brand-400">2.</span> 在 <strong>分析工作台</strong> 查看 K 线、信号、形态，并把标的发送到回测 / Agent / 组合。</p>
+                            <p><span class="text-brand-400">3.</span> 在 <strong>对比实验室</strong> 对比 2-4 个标的的收益曲线与信号。</p>
+                            <p><span class="text-brand-400">4.</span> 在 <strong>回测工作室</strong> 保存多次实验并叠加历史结果。</p>
+                            <p><span class="text-brand-400">5.</span> 在 <strong>组合工作室</strong> 基于候选池做资产配置。</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3 class="text-lg font-semibold mb-3">当前工作区</h3>
+                        <div id="dashboard-context" class="space-y-3 text-sm text-slate-300"></div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                    <div class="card">
+                        <h3 class="text-lg font-semibold mb-3"><i class="fas fa-flask text-brand-500"></i> 策略列表</h3>
+                        <div id="dash-strategy-list" class="space-y-2 text-sm"></div>
+                    </div>
+                    <div class="card">
+                        <h3 class="text-lg font-semibold mb-3"><i class="fas fa-robot text-purple-400"></i> AI 人格</h3>
+                        <div id="dash-persona-list" class="space-y-2 text-sm"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="page-analysis" class="page hidden">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <h2 class="text-2xl font-bold">📈 分析工作台</h2>
+                    <div class="quick-actions">
+                        <button id="analysis-add-watchlist" class="mini-button"><i class="fas fa-star"></i> 加入关注</button>
+                        <button id="analysis-add-compare" class="mini-button"><i class="fas fa-layer-group"></i> 加入对比</button>
+                        <button id="analysis-send-backtest" class="mini-button"><i class="fas fa-flask"></i> 送去回测</button>
+                        <button id="analysis-send-agent" class="mini-button"><i class="fas fa-robot"></i> 送去 Agent</button>
+                        <button id="analysis-add-basket" class="mini-button"><i class="fas fa-wallet"></i> 加入组合</button>
+                    </div>
+                </div>
+
+                <div class="flex flex-wrap gap-4 mb-4">
+                    <input id="analysis-symbol" type="text" placeholder="股票代码 (000001)" class="input-field w-48">
+                    <select id="analysis-market" class="input-field w-32">
+                        <option value="a_share">A股</option>
+                        <option value="us">美股</option>
+                        <option value="hk">港股</option>
+                    </select>
+                    <select id="analysis-days" class="input-field w-32">
+                        <option value="60">60天</option>
+                        <option value="120" selected>120天</option>
+                        <option value="250">250天</option>
+                        <option value="365">1年</option>
+                    </select>
+                    <button id="analysis-btn" class="btn-primary"><i class="fas fa-chart-line"></i> 分析</button>
+                </div>
+
+                <div id="analysis-signal" class="hidden mb-4 metric-grid"></div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)] gap-4">
+                    <div class="card">
+                        <div id="analysis-chart" class="min-h-[560px]">
+                            <div class="text-slate-500 text-center py-20">输入股票代码并点击“分析”</div>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <div id="analysis-indicators" class="card hidden">
+                            <h3 class="text-lg font-semibold mb-3">指标面板</h3>
+                            <div id="indicator-scores" class="metric-grid"></div>
+                        </div>
+                        <div class="card">
+                            <h3 class="text-lg font-semibold mb-3">形态与观察</h3>
+                            <div id="analysis-patterns" class="space-y-2 text-sm text-slate-300">
+                                <div class="empty-state">尚未加载</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="page-compare" class="page hidden">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <h2 class="text-2xl font-bold">🧪 对比实验室</h2>
+                    <div class="quick-actions">
+                        <button id="compare-use-active" class="mini-button"><i class="fas fa-bullseye"></i> 使用当前标的</button>
+                        <button id="compare-use-basket" class="mini-button"><i class="fas fa-wallet"></i> 使用组合候选</button>
+                    </div>
+                </div>
+                <div class="flex flex-wrap gap-4 mb-4">
+                    <input id="compare-symbols" type="text" placeholder="多个股票代码，逗号分隔" class="input-field min-w-[320px] flex-1">
+                    <select id="compare-market" class="input-field w-32">
+                        <option value="a_share">A股</option>
+                        <option value="us">美股</option>
+                        <option value="hk">港股</option>
+                    </select>
+                    <select id="compare-days" class="input-field w-32">
+                        <option value="60">60天</option>
+                        <option value="120" selected>120天</option>
+                        <option value="250">250天</option>
+                        <option value="365">1年</option>
+                    </select>
+                    <button id="compare-btn" class="btn-primary"><i class="fas fa-scale-balanced"></i> 开始对比</button>
+                </div>
+                <div class="card mb-4">
+                    <div id="compare-chart" class="min-h-[420px]">
+                        <div class="empty-state text-center py-16">添加 2-4 个标的后开始对比</div>
+                    </div>
+                </div>
+                <div id="compare-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
+            </div>
+
+            <div id="page-backtest" class="page hidden">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <h2 class="text-2xl font-bold">🧪 回测工作室</h2>
+                    <div class="quick-actions">
+                        <button id="bt-compare-history" class="mini-button"><i class="fas fa-chart-area"></i> 叠加历史</button>
+                    </div>
+                </div>
+                <div class="flex flex-wrap gap-4 mb-4">
+                    <input id="bt-symbol" type="text" placeholder="股票代码" class="input-field w-40">
+                    <select id="bt-strategy" class="input-field w-48"></select>
+                    <select id="bt-market" class="input-field w-28">
+                        <option value="a_share">A股</option>
+                        <option value="us">美股</option>
+                        <option value="hk">港股</option>
+                    </select>
+                    <select id="bt-preset" class="input-field w-40">
+                        <option value="custom">自定义</option>
+                        <option value="swing">波段</option>
+                        <option value="trend">趋势</option>
+                        <option value="long">长周期</option>
+                    </select>
+                    <input id="bt-days" type="number" value="365" class="input-field w-28" placeholder="天数">
+                    <input id="bt-capital" type="number" value="1000000" class="input-field w-36" placeholder="初始资金">
+                    <button id="bt-btn" class="btn-primary"><i class="fas fa-play"></i> 运行</button>
+                </div>
+
+                <div id="bt-loading" class="hidden text-center py-10 text-slate-500">
+                    <i class="fas fa-spinner fa-spin text-2xl"></i>
+                    <p class="mt-2">回测运行中...</p>
+                </div>
+
+                <div id="bt-results" class="hidden space-y-4">
+                    <div id="bt-metrics" class="metric-grid"></div>
+                    <div class="card">
+                        <h3 class="text-lg font-semibold mb-3">资金曲线</h3>
+                        <div id="bt-equity-chart" class="min-h-[340px]"></div>
+                    </div>
+                    <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)] gap-4">
+                        <div class="card">
+                            <h3 class="text-lg font-semibold mb-3">交易记录</h3>
+                            <div id="bt-trades" class="overflow-x-auto"></div>
+                        </div>
+                        <div class="card">
+                            <h3 class="text-lg font-semibold mb-3">实验历史</h3>
+                            <div id="bt-history" class="rail-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="page-agent" class="page hidden">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <h2 class="text-2xl font-bold">🤖 Agent 工作区</h2>
+                    <button id="agent-use-active" class="mini-button"><i class="fas fa-bullseye"></i> 使用当前标的</button>
+                </div>
+                <div class="flex flex-wrap gap-4 mb-4">
+                    <input id="agent-symbol" type="text" placeholder="股票代码" class="input-field w-40">
+                    <select id="agent-market" class="input-field w-28">
+                        <option value="a_share">A股</option>
+                        <option value="us">美股</option>
+                        <option value="hk">港股</option>
+                    </select>
+                    <label class="flex items-center gap-2 text-sm text-slate-300">
+                        <input id="agent-debate" type="checkbox" checked class="accent-brand-500"> 风险辩论
+                    </label>
+                    <button id="agent-btn" class="btn-primary"><i class="fas fa-brain"></i> 开始分析</button>
+                </div>
+
+                <div class="card mb-4">
+                    <h3 class="text-sm font-semibold text-slate-400 mb-2">人格选择</h3>
+                    <div id="agent-personas" class="flex flex-wrap gap-2"></div>
+                </div>
+
+                <div id="agent-loading" class="hidden text-center py-10 text-slate-500">
+                    <i class="fas fa-spinner fa-spin text-2xl"></i>
+                    <p class="mt-2">Agent 分析中，可能需要一些时间...</p>
+                </div>
+
+                <div id="agent-results" class="hidden space-y-4"></div>
+            </div>
+
+            <div id="page-portfolio" class="page hidden">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <h2 class="text-2xl font-bold">💼 组合工作室</h2>
+                    <button id="pf-use-basket" class="mini-button"><i class="fas fa-basket-shopping"></i> 使用候选池</button>
+                </div>
+                <div class="flex flex-wrap gap-4 mb-4">
+                    <div class="flex-1 min-w-[320px]">
+                        <label class="text-sm text-slate-400">股票代码 (逗号分隔)</label>
+                        <input id="pf-symbols" type="text" placeholder="000001, 600519, 000858"
+                               class="input-field w-full mt-1">
+                    </div>
+                    <div>
+                        <label class="text-sm text-slate-400">优化方法</label>
+                        <select id="pf-method" class="input-field w-40 mt-1">
+                            <option value="max_sharpe">最大夏普</option>
+                            <option value="min_variance">最小方差</option>
+                            <option value="risk_parity">风险平价</option>
+                            <option value="equal_weight">等权重</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-sm text-slate-400">总资金 (¥)</label>
+                        <input id="pf-capital" type="number" value="1000000" class="input-field w-36 mt-1">
+                    </div>
+                    <div>
+                        <label class="text-sm text-slate-400">无风险利率</label>
+                        <input id="pf-risk-free" type="number" step="0.001" value="0.03" class="input-field w-32 mt-1">
+                    </div>
+                    <div class="flex items-end">
+                        <button id="pf-btn" class="btn-primary"><i class="fas fa-calculator"></i> 优化</button>
+                    </div>
+                </div>
+
+                <div id="pf-loading" class="hidden text-center py-10 text-slate-500">
+                    <i class="fas fa-spinner fa-spin text-2xl"></i>
+                    <p class="mt-2">计算中...</p>
+                </div>
+
+                <div id="pf-results" class="hidden space-y-4">
+                    <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)] gap-4">
+                        <div class="card">
+                            <h3 class="text-lg font-semibold mb-3">配置权重</h3>
+                            <div id="pf-chart" class="min-h-[320px]"></div>
+                        </div>
+                        <div class="card">
+                            <h3 class="text-lg font-semibold mb-3">组合指标</h3>
+                            <div id="pf-metrics"></div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                        <div class="card">
+                            <h3 class="text-lg font-semibold mb-3">方法比较</h3>
+                            <div id="pf-method-compare" class="metric-grid"></div>
+                        </div>
+                        <div class="card">
+                            <h3 class="text-lg font-semibold mb-3">资金分配</h3>
+                            <div id="pf-allocations"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="page-news" class="page hidden">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-2xl font-bold">📰 市场资讯</h2>
+                    <button id="news-refresh" class="btn-primary"><i class="fas fa-sync"></i> 刷新</button>
+                </div>
+                <div id="news-loading" class="hidden text-center py-10 text-slate-500">
+                    <i class="fas fa-spinner fa-spin"></i> 加载中...
+                </div>
+                <div id="news-list" class="space-y-2"></div>
+            </div>
+        </section>
+
+        <aside class="insight-rail">
+            <div class="rail-section">
+                <div class="rail-title">Current Context</div>
+                <div id="rail-current-context" class="space-y-3">
+                    <div class="empty-state">搜索股票后会出现在这里。</div>
+                </div>
+            </div>
+
+            <div class="rail-section">
+                <div class="rail-title">Watchlist</div>
+                <div id="rail-watchlist" class="rail-list"></div>
+            </div>
+
+            <div class="rail-section">
+                <div class="rail-title">Compare Basket</div>
+                <div id="rail-compare" class="rail-list"></div>
+            </div>
+
+            <div class="rail-section">
+                <div class="rail-title">Portfolio Basket</div>
+                <div id="rail-basket" class="rail-list"></div>
+            </div>
+
+            <div class="rail-section">
+                <div class="rail-title">Backtest History</div>
+                <div id="rail-backtests" class="rail-list"></div>
+            </div>
+
+            <div class="rail-section">
+                <div class="rail-title">Agent Sessions</div>
+                <div id="rail-agent-sessions" class="rail-list"></div>
+            </div>
+        </aside>
+    </div>
+</main>
+
+<div id="toast" class="fixed bottom-4 right-4 bg-surface-800 border border-slate-700 rounded-lg px-4 py-3
+            shadow-xl transform translate-y-20 opacity-0 transition-all duration-300 z-50 max-w-sm">
+    <span id="toast-msg"></span>
+</div>
+
+<script src="/static/js/state.js"></script>
+<script src="/static/js/app.js"></script>
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/analysis.js"></script>
+<script src="/static/js/compare.js"></script>
+<script src="/static/js/backtest.js"></script>
+<script src="/static/js/agent.js"></script>
+<script src="/static/js/portfolio.js"></script>
+</body>
+</html>
