@@ -20,7 +20,7 @@ class YFinanceAdapter(BaseDataAdapter):
     """yfinance adapter for US/international market data."""
 
     name = "yfinance"
-    supported_markets = [Market.US, Market.HK, Market.GLOBAL]
+    supported_markets = [Market.US, Market.HK, Market.GLOBAL, Market.A_SHARE]
 
     def __init__(self) -> None:
         try:
@@ -53,7 +53,7 @@ class YFinanceAdapter(BaseDataAdapter):
         }
         interval = interval_map.get(timeframe, "1d")
 
-        ticker = self._yf.Ticker(symbol)
+        ticker = self._yf.Ticker(self._normalize_symbol(symbol))
         df = ticker.history(
             start=self._to_date_str(start_date) if start_date else None,
             end=self._to_date_str(end_date) if end_date else None,
@@ -155,6 +155,18 @@ class YFinanceAdapter(BaseDataAdapter):
         if isinstance(d, str):
             return d
         return d.strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        upper_symbol = symbol.upper()
+        if upper_symbol.endswith((".SS", ".SZ", ".HK")):
+            return upper_symbol
+
+        if symbol.isdigit() and len(symbol) == 6:
+            suffix = ".SS" if symbol.startswith(("5", "6", "9")) else ".SZ"
+            return f"{symbol}{suffix}"
+
+        return symbol
 
     @staticmethod
     def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:

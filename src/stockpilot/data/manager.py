@@ -64,6 +64,44 @@ class DataManager:
             return next(iter(self._adapters.values()))
         raise RuntimeError("No data adapters registered")
 
+    def _get_price_history_adapters(
+        self,
+        *,
+        adapter_name: str | None = None,
+        market: Market | None = None,
+    ) -> list[BaseDataAdapter]:
+        """Return candidate adapters in failover order for price history."""
+        if adapter_name:
+            return [self.get_adapter(name=adapter_name)]
+
+        candidates: list[BaseDataAdapter] = []
+        seen: set[str] = set()
+
+        def add_candidate(adapter: BaseDataAdapter) -> None:
+            if adapter.name not in seen:
+                candidates.append(adapter)
+                seen.add(adapter.name)
+
+        routed_name = self._market_routing.get(market) if market is not None else None
+        if routed_name and routed_name in self._adapters:
+            add_candidate(self._adapters[routed_name])
+
+        if market is not None:
+            for adapter in self._adapters.values():
+                if market in adapter.supported_markets:
+                    add_candidate(adapter)
+        else:
+            for adapter in self._adapters.values():
+                add_candidate(adapter)
+
+        if not candidates and self._adapters:
+            add_candidate(next(iter(self._adapters.values())))
+
+        if not candidates:
+            raise RuntimeError("No data adapters registered")
+
+        return candidates
+
     def get_price_history(
         self,
         symbol: str,
@@ -92,13 +130,41 @@ class DataManager:
                 logger.debug("Cache hit: price history for %s", symbol)
                 return cached
 
-        adapter = self.get_adapter(name=adapter_name, market=market)
-        df = adapter.get_price_history(symbol, start_date, end_date, timeframe, adjust)
+        last_error: Exception | None = None
+        empty_result: pd.DataFrame | None = None
+        for adapter in self._get_price_history_adapters(adapter_name=adapter_name, market=market):
+            try:
+                df = adapter.get_price_history(symbol, start_date, end_date, timeframe, adjust)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Price history adapter %s failed for %s (%s): %s",
+                    adapter.name,
+                    symbol,
+                    market,
+                    exc,
+                )
+                continue
 
-        if use_cache and not df.empty:
-            self._cache.set_dataframe(cache_key, df)
+            if df.empty:
+                empty_result = df
+                logger.info(
+                    "Price history adapter %s returned no data for %s (%s)",
+                    adapter.name,
+                    symbol,
+                    market,
+                )
+                continue
 
-        return df
+            if use_cache:
+                self._cache.set_dataframe(cache_key, df)
+
+            return df
+
+        if last_error is not None:
+            raise last_error
+
+        return empty_result if empty_result is not None else pd.DataFrame()
 
     def get_realtime_quote(
         self,

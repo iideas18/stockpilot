@@ -14,6 +14,13 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+
+def _to_python_scalar(value: Any) -> Any:
+    """Convert NumPy scalar values to native Python scalars."""
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
 # All 61 TA-Lib candlestick pattern functions
 CANDLESTICK_PATTERNS = {
     "CDL2CROWS": "Two Crows",
@@ -132,13 +139,13 @@ def get_pattern_signals(df: pd.DataFrame) -> list[dict[str, Any]]:
     for func_name, pattern_name in CANDLESTICK_PATTERNS.items():
         if func_name not in df.columns:
             continue
-        value = last_row.get(func_name, 0)
+        value = _to_python_scalar(last_row.get(func_name, 0))
         if value != 0:
             signals.append({
                 "pattern": pattern_name,
                 "code": func_name,
                 "signal": "bullish" if value > 0 else "bearish",
-                "strength": abs(value),
+                "strength": abs(int(value)),
             })
 
     return signals
@@ -165,13 +172,13 @@ def get_pattern_summary(df: pd.DataFrame, lookback: int = 5) -> dict[str, Any]:
         row_date = row.get("date", i)
         for func_name, pattern_name in CANDLESTICK_PATTERNS.items():
             if func_name in df_patterns.columns:
-                value = row.get(func_name, 0)
+                value = _to_python_scalar(row.get(func_name, 0))
                 if value != 0:
                     all_signals.append({
                         "date": str(row_date),
                         "pattern": pattern_name,
                         "signal": "bullish" if value > 0 else "bearish",
-                        "strength": abs(value),
+                        "strength": abs(int(value)),
                     })
 
     bullish = [s for s in all_signals if s["signal"] == "bullish"]
@@ -182,6 +189,6 @@ def get_pattern_summary(df: pd.DataFrame, lookback: int = 5) -> dict[str, Any]:
         "total_patterns": total,
         "bullish_count": len(bullish),
         "bearish_count": len(bearish),
-        "bullish_score": len(bullish) / total if total > 0 else 0.5,
+        "bullish_score": float(len(bullish) / total) if total > 0 else 0.5,
         "patterns": all_signals,
     }

@@ -10,6 +10,7 @@ import logging
 from datetime import date, datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from stockpilot.data.adapters import BaseDataAdapter, Market, StockInfo, TimeFrame
@@ -51,6 +52,7 @@ class AKShareAdapter(BaseDataAdapter):
         """Get historical OHLCV data via ak.stock_zh_a_hist."""
         start = self._to_date_str(start_date) if start_date else "19700101"
         end = self._to_date_str(end_date) if end_date else self._to_date_str(date.today())
+        normalized_adjust = self._normalize_adjust(adjust)
 
         period_map = {
             TimeFrame.DAILY: "daily",
@@ -59,14 +61,45 @@ class AKShareAdapter(BaseDataAdapter):
         }
         period = period_map.get(timeframe, "daily")
 
-        df = self._ak.stock_zh_a_hist(
-            symbol=symbol,
-            period=period,
-            start_date=start,
-            end_date=end,
-            adjust=adjust,
+        primary_error: Exception | None = None
+        try:
+            df = self._ak.stock_zh_a_hist(
+                symbol=symbol,
+                period=period,
+                start_date=start,
+                end_date=end,
+                adjust=normalized_adjust,
+                timeout=10,
+            )
+            return self._normalize_price_df(df)
+        except Exception as exc:
+            primary_error = exc
+            logger.warning("AKShare EastMoney history failed for %s: %s", symbol, exc)
+
+        if timeframe != TimeFrame.DAILY:
+            raise primary_error
+
+        fallback_sources = (
+            ("Tencent", self._fetch_tx_price_history),
+            ("Sina", self._fetch_sina_price_history),
         )
-        return self._normalize_price_df(df)
+        last_error = primary_error
+        for source_name, fetcher in fallback_sources:
+            try:
+                df = fetcher(symbol=symbol, start_date=start, end_date=end, adjust=normalized_adjust)
+            except Exception as exc:
+                last_error = exc
+                logger.warning("AKShare %s history fallback failed for %s: %s", source_name, symbol, exc)
+                continue
+
+            if not df.empty:
+                logger.info("AKShare %s history fallback succeeded for %s", source_name, symbol)
+                return df
+
+        if last_error is not None:
+            raise last_error
+
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
 
     def get_realtime_quote(self, symbol: str) -> dict[str, Any]:
         """Get real-time quote for a single stock."""
@@ -196,3 +229,82 @@ class AKShareAdapter(BaseDataAdapter):
             "昨收": "prev_close",
         }
         return df.rename(columns=col_map)
+
+    def _fetch_tx_price_history(
+        self,
+        *,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        adjust: str,
+    ) -> pd.DataFrame:
+        df = self._ak.stock_zh_a_hist_tx(
+            symbol=self._to_exchange_symbol(symbol),
+            start_date=start_date,
+            end_date=end_date,
+            adjust=adjust,
+            timeout=10,
+        )
+        return self._normalize_fallback_price_df(df)
+
+    def _fetch_sina_price_history(
+        self,
+        *,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        adjust: str,
+    ) -> pd.DataFrame:
+        df = self._ak.stock_zh_a_daily(
+            symbol=self._to_exchange_symbol(symbol),
+            start_date=start_date,
+            end_date=end_date,
+            adjust=adjust,
+        )
+        return self._normalize_fallback_price_df(df)
+
+    @staticmethod
+    def _normalize_adjust(adjust: str) -> str:
+        return "" if adjust == "none" else adjust
+
+    @staticmethod
+    def _to_exchange_symbol(symbol: str) -> str:
+        normalized = symbol.strip().lower()
+        if normalized.startswith(("sh", "sz", "bj")):
+            return normalized
+
+        if normalized.endswith(".ss"):
+            return f"sh{normalized[:-3]}"
+        if normalized.endswith(".sz"):
+            return f"sz{normalized[:-3]}"
+
+        digits = "".join(ch for ch in normalized if ch.isdigit())
+        if len(digits) == 6:
+            if digits.startswith(("4", "8")):
+                prefix = "bj"
+            elif digits.startswith(("5", "6", "9")):
+                prefix = "sh"
+            else:
+                prefix = "sz"
+            return f"{prefix}{digits}"
+
+        return normalized
+
+    @staticmethod
+    def _normalize_fallback_price_df(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
+
+        result = df.copy()
+        expected_columns = ["date", "open", "high", "low", "close", "volume", "amount"]
+        for col in expected_columns:
+            if col not in result.columns:
+                result[col] = np.nan
+
+        result["date"] = pd.to_datetime(result["date"], errors="coerce")
+        for col in expected_columns[1:]:
+            result[col] = pd.to_numeric(result[col], errors="coerce")
+
+        result = result[expected_columns]
+        result = result.dropna(subset=["date", "open", "high", "low", "close"])
+        return result.reset_index(drop=True)
