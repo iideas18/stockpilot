@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from stockpilot import config as config_module
 from stockpilot.config import get_settings
 from stockpilot.data.reliability.types import (
     CacheClass,
@@ -54,3 +55,33 @@ def test_data_result_to_status_dict_matches_api_contract():
     status = result.to_status_dict()
     assert status["status"] == "stale"
     assert status["missing_symbols"] == ["MSFT"]
+
+
+def test_reliability_partial_yaml_override_merges_with_defaults(monkeypatch):
+    synthetic_yaml = {
+        "data": {
+            "reliability": {
+                "health": {"degrade_after_errors": 5},
+            }
+        }
+    }
+    monkeypatch.setattr(config_module, "_load_yaml_config", lambda: synthetic_yaml)
+    get_settings.cache_clear()
+    try:
+        rel = get_settings().data.reliability
+
+        # Overridden health field took effect
+        assert rel.health["degrade_after_errors"] == 5
+        # Other health fields retain their defaults
+        assert rel.health["cool_down_after_errors"] == 3
+        assert rel.health["cooldown_seconds"] == 120
+        assert rel.health["recover_after_successes"] == 2
+
+        # Other top-level keys retain their defaults
+        assert rel.source_order["price_history"]["a_share"] == ["akshare"]
+        assert rel.source_order["price_history"]["us"] == ["yfinance"]
+        assert rel.cache_windows["live_quote"]["fresh_seconds"] == 15
+        assert rel.cache_windows["live_quote"]["stale_seconds"] == 120
+        assert rel.enabled is True
+    finally:
+        get_settings.cache_clear()

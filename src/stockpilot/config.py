@@ -7,6 +7,7 @@ Settings object used throughout the application.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -113,27 +114,25 @@ def _default_health() -> dict[str, int]:
     }
 
 
+_DEFAULT_RELIABILITY_SQLITE_PATH = str(
+    PROJECT_ROOT / "data" / "cache" / "stockpilot_reliability.sqlite3"
+)
+
+
+@dataclass
 class ReliabilitySettings:
     """Typed settings for the data reliability layer."""
 
-    def __init__(
-        self,
-        enabled: bool = True,
-        sqlite_path: str | None = None,
-        source_order: dict[str, dict[str, list[str]]] | None = None,
-        cache_windows: dict[str, dict[str, int]] | None = None,
-        health: dict[str, int] | None = None,
-    ) -> None:
-        self.enabled = enabled
-        self.sqlite_path = sqlite_path or str(
-            PROJECT_ROOT / "data" / "cache" / "stockpilot_reliability.sqlite3"
-        )
-        self.source_order = source_order if source_order is not None else _default_source_order()
-        self.cache_windows = cache_windows if cache_windows is not None else _default_cache_windows()
-        self.health = health if health is not None else _default_health()
+    enabled: bool = True
+    sqlite_path: str = _DEFAULT_RELIABILITY_SQLITE_PATH
+    source_order: dict[str, dict[str, list[str]]] = field(default_factory=_default_source_order)
+    cache_windows: dict[str, dict[str, int]] = field(default_factory=_default_cache_windows)
+    health: dict[str, int] = field(default_factory=_default_health)
 
 
 class DataSettings(BaseSettings):
+    model_config = SettingsConfigDict(arbitrary_types_allowed=True)
+
     primary_source: str = "akshare"
     cache_backend: str = "redis"
     cache_ttl_seconds: int = 3600
@@ -142,7 +141,7 @@ class DataSettings(BaseSettings):
     alpha_vantage_api_key: str = Field(default="", alias="ALPHA_VANTAGE_API_KEY")
     tushare_token: str = Field(default="", alias="TUSHARE_TOKEN")
 
-    model_config = {"arbitrary_types_allowed": True, "extra": "allow"}
+    reliability: ReliabilitySettings = Field(default_factory=ReliabilitySettings)
 
 
 class NewsSettings(BaseSettings):
