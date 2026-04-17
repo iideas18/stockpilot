@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -19,18 +20,36 @@ DEFAULT_STALE_REASON = "live sources unavailable; serving cached payload"
 DEFAULT_RETRY_AFTER_SECONDS = 120
 
 
-class _FrozenIsoDateTime:
-    """Lightweight wrapper whose .isoformat() returns a preset string.
+class _ZuluDatetime(datetime):
+    """``datetime`` subclass whose ``isoformat()`` emits a ``Z`` suffix.
 
-    This keeps ``DataResult.to_status_dict()`` deterministic for tests without
-    fighting datetime serialization.
+    The reliability envelope contract (spec lines 953, 1390) requires
+    ``fetched_at`` to be serialized as e.g. ``"2026-04-17T09:25:00Z"`` rather
+    than the stdlib default ``"+00:00"`` offset form. Tests rely on exact
+    string equality, so we return a real ``datetime`` instance that round-trips
+    through ``DataResult.to_status_dict()`` while preserving the Z form.
     """
 
-    def __init__(self, value: str) -> None:
-        self._value = value
+    def isoformat(self, sep: str = "T", timespec: str = "auto") -> str:  # type: ignore[override]
+        base = super().isoformat(sep=sep, timespec=timespec)
+        if base.endswith("+00:00"):
+            return base[:-6] + "Z"
+        return base
 
-    def isoformat(self) -> str:
-        return self._value
+
+def _parse_fetched_at(value: str) -> _ZuluDatetime:
+    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    return _ZuluDatetime(
+        parsed.year,
+        parsed.month,
+        parsed.day,
+        parsed.hour,
+        parsed.minute,
+        parsed.second,
+        parsed.microsecond,
+        tzinfo=parsed.tzinfo,
+    )
 
 
 def sample_price_history(symbol: str) -> pd.DataFrame:
@@ -104,7 +123,7 @@ def build_result(
         cache_key=f"{domain}:{symbol}",
         source=source,
         served_from_cache=served_from_cache,
-        fetched_at=_FrozenIsoDateTime(fetched_at),
+        fetched_at=_parse_fetched_at(fetched_at),
         age_seconds=age_seconds,
         degraded_reason=degraded_reason,
         missing_symbols=tuple(missing_symbols),

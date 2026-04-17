@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from stockpilot.config import get_settings
 from stockpilot.data.adapters import Market
+from stockpilot.data.reliability.types import ReliabilityError, ResultKind
 
 logger = logging.getLogger(__name__)
 
@@ -352,19 +353,15 @@ def _status_dict(result):
 
 def _not_found_envelope(*, domain: str, market, symbol: str) -> dict[str, Any]:
     market_value = market.value if isinstance(market, Market) else str(market)
-    return {
-        "status": "not_found",
-        "code": "DATA_NOT_FOUND",
-        "message": f"No data found for {symbol}",
-        "domain": domain,
-        "market": market_value,
-        "symbol": symbol,
-        "missing_symbols": [],
-        "attempted_sources": [],
-        "cache_state": None,
-        "retry_after_seconds": None,
-        "http_status": 404,
-    }
+    return ReliabilityError(
+        status="not_found",
+        code="DATA_NOT_FOUND",
+        message=f"No data found for {symbol}",
+        domain=domain,
+        market=market_value,
+        symbol=symbol,
+        http_status=404,
+    ).to_dict()
 
 
 def _load_price_history_result(
@@ -388,8 +385,6 @@ def _load_price_history_result(
             detail=result.error.to_dict(),
         )
     # Single-resource routes translate empty payloads into 404 not_found
-    from stockpilot.data.reliability.types import ResultKind
-
     if result.result_kind == ResultKind.EMPTY:
         raise HTTPException(
             status_code=404,
@@ -412,8 +407,6 @@ def _load_fundamental_result(
             status_code=result.error.http_status,
             detail=result.error.to_dict(),
         )
-    from stockpilot.data.reliability.types import ResultKind
-
     if result.result_kind == ResultKind.EMPTY:
         raise HTTPException(
             status_code=404,
