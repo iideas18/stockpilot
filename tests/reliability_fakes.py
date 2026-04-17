@@ -614,6 +614,27 @@ def gateway_with_partial_quotes_batch() -> FakeGateway:
     return FakeGateway(single_result=result)
 
 
+def gateway_returning_stale_analysis_data(symbol: str = "AAPL") -> FakeGateway:
+    """Gateway fake that returns a stale price_history DataResult with a realistic DataFrame.
+
+    Used by CLI reliability tests to assert the stale-cache warning path.
+    """
+    return FakeGateway(
+        single_result=build_result(
+            domain="price_history",
+            status="stale",
+            result_kind="data",
+            source="cache:akshare",
+            served_from_cache=True,
+            age_seconds=DEFAULT_STALE_AGE_SECONDS,
+            symbol=symbol,
+            attempted_sources=[
+                {"adapter": "akshare", "outcome": "error", "reason": "ConnectionError"},
+            ],
+        )
+    )
+
+
 def gateway_with_unavailable_quotes_batch() -> FakeGateway:
     err = ReliabilityError(
         status="unavailable",

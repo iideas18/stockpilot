@@ -9,8 +9,36 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from stockpilot.data.runtime import build_default_data_gateway
+
 app = typer.Typer(name="stockpilot", help="AI-powered quantitative investment platform")
 console = Console()
+
+
+def _warn_if_stale(result) -> None:
+    """Print a yellow warning if the DataResult is stale."""
+    if getattr(result, "status", None) == "stale":
+        console.print(
+            f"[yellow]Using stale cached data from {result.source}[/yellow]"
+        )
+
+
+def _handle_error(result, symbol: str) -> None:
+    """Surface a reliability error and exit with code 1."""
+    err = getattr(result, "error", None)
+    if err is None:
+        return
+    msg = getattr(err, "message", str(err))
+    code = getattr(err, "code", "?")
+    retry = getattr(err, "retry_after_seconds", None)
+    console.print(
+        f"[red]Data unavailable for {symbol}: {code} — {msg}[/red]"
+    )
+    if retry:
+        console.print(
+            f"[yellow]Retry after {retry} seconds.[/yellow]"
+        )
+    raise typer.Exit(1)
 
 
 @app.command()
@@ -20,25 +48,27 @@ def analyze(
     days: int = typer.Option(120, help="Days of historical data"),
 ):
     """Run technical analysis on a stock."""
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
     from stockpilot.data.adapters import Market
     from stockpilot.analysis.signals import generate_signals
 
     console.print(f"\n📊 Analyzing [bold]{symbol}[/bold]...\n")
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
+    gateway = build_default_data_gateway()
 
     end = date.today()
     start = end - timedelta(days=days)
-    df = dm.get_price_history(symbol, market=Market(market), start_date=start, end_date=end)
+    result = gateway.get_price_history(
+        symbol, market=Market(market), start_date=start, end_date=end
+    )
+    _handle_error(result, symbol)
+    _warn_if_stale(result)
+    df = result.data
 
-    if df.empty:
+    if df is None or df.empty:
         console.print(f"[red]No data found for {symbol}[/red]")
         raise typer.Exit(1)
 
-    result = generate_signals(df)
+    sig = generate_signals(df)
 
     signal_colors = {
         "strong_buy": "green bold",
@@ -47,7 +77,7 @@ def analyze(
         "sell": "red",
         "strong_sell": "red bold",
     }
-    signal = result["signal"].value
+    signal = sig["signal"].value
     color = signal_colors.get(signal, "white")
 
     table = Table(title=f"Analysis: {symbol}")
@@ -55,16 +85,16 @@ def analyze(
     table.add_column("Value", style="white")
 
     table.add_row("Signal", f"[{color}]{signal.upper()}[/{color}]")
-    table.add_row("Combined Score", f"{result['combined_score']:.4f}")
-    table.add_row("Indicator Score", f"{result['indicator_analysis']['composite_score']:.4f}")
-    table.add_row("Pattern Score", f"{result['pattern_analysis']['bullish_score']:.2f}")
-    table.add_row("Bullish Patterns", str(result['pattern_analysis']['bullish_count']))
-    table.add_row("Bearish Patterns", str(result['pattern_analysis']['bearish_count']))
+    table.add_row("Combined Score", f"{sig['combined_score']:.4f}")
+    table.add_row("Indicator Score", f"{sig['indicator_analysis']['composite_score']:.4f}")
+    table.add_row("Pattern Score", f"{sig['pattern_analysis']['bullish_score']:.2f}")
+    table.add_row("Bullish Patterns", str(sig['pattern_analysis']['bullish_count']))
+    table.add_row("Bearish Patterns", str(sig['pattern_analysis']['bearish_count']))
 
     console.print(table)
 
     # Indicator details
-    details = result["indicator_analysis"].get("details", {})
+    details = sig["indicator_analysis"].get("details", {})
     if details:
         detail_table = Table(title="Indicator Scores")
         detail_table.add_column("Indicator", style="cyan")
@@ -75,14 +105,18 @@ def analyze(
 
 
 @app.command()
-def search(keyword: str = typer.Argument(..., help="Search keyword")):
+def search(
+    keyword: str = typer.Argument(..., help="Search keyword"),
+    market: str = typer.Option("a_share", help="Market: a_share, us, hk"),
+):
     """Search for stocks by name or symbol."""
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
+    from stockpilot.data.adapters import Market
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
-    results = dm.search(keyword)
+    gateway = build_default_data_gateway()
+    result = gateway.search(keyword, market=Market(market))
+    _handle_error(result, keyword)
+    _warn_if_stale(result)
+    results = result.data or []
 
     if not results:
         console.print(f"[yellow]No results for '{keyword}'[/yellow]")
@@ -135,11 +169,7 @@ def agent(
 ):
     """Run full LLM agent analysis with personas and risk debate."""
     from rich.panel import Panel
-    from rich.columns import Columns
 
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
-    from stockpilot.data.adapters.yfinance_adapter import YFinanceAdapter
     from stockpilot.data.adapters import Market
     from stockpilot.analysis.signals import generate_signals
     from stockpilot.agents.personas.investors import PERSONAS, create_persona_agent
@@ -152,16 +182,18 @@ def agent(
     stats.reset()
 
     # 1. Fetch data
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
-    dm.register_adapter(YFinanceAdapter())
+    gateway = build_default_data_gateway()
 
-    from datetime import date, timedelta
     end = date.today()
     start = end - timedelta(days=120)
-    df = dm.get_price_history(symbol, market=Market(market), start_date=start, end_date=end)
+    result = gateway.get_price_history(
+        symbol, market=Market(market), start_date=start, end_date=end
+    )
+    _handle_error(result, symbol)
+    _warn_if_stale(result)
+    df = result.data
 
-    if df.empty:
+    if df is None or df.empty:
         console.print(f"[red]No data found for {symbol}[/red]")
         raise typer.Exit(1)
 
@@ -206,10 +238,9 @@ def agent(
         console.print(f"  💭 {persona['name']} analyzing...", end="")
         agent_fn = create_persona_agent(key)
         try:
-            result = agent_fn(state)
-            state.update(result)
+            persona_result = agent_fn(state)
+            state.update(persona_result)
             analysis_text = state["persona_analyses"].get(persona["name"], "N/A")
-            # Truncate for display
             display_text = analysis_text[:500] + "..." if len(analysis_text) > 500 else analysis_text
             panels.append(Panel(
                 display_text,
@@ -284,8 +315,6 @@ def backtest(
     market: str = typer.Option("a_share", help="Market: a_share, us, hk"),
 ):
     """Run a strategy backtest."""
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
     from stockpilot.data.adapters import Market
     from stockpilot.analysis.indicators import calculate_all_indicators
     from stockpilot.backtesting.engine import BacktestConfig, BacktestEngine
@@ -311,15 +340,18 @@ def backtest(
         console.print(f"[red]Unknown strategy '{strategy}'. Use --strategy list to see options.[/red]")
         raise typer.Exit(1)
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
+    gateway = build_default_data_gateway()
 
-    from datetime import date, timedelta
     end = date.today()
     start = end - timedelta(days=days)
-    df = dm.get_price_history(symbol, market=Market(market), start_date=start, end_date=end)
+    result = gateway.get_price_history(
+        symbol, market=Market(market), start_date=start, end_date=end
+    )
+    _handle_error(result, symbol)
+    _warn_if_stale(result)
+    df = result.data
 
-    if df.empty:
+    if df is None or df.empty:
         console.print(f"[red]No data found for {symbol}[/red]")
         raise typer.Exit(1)
 
@@ -333,12 +365,12 @@ def backtest(
     engine = BacktestEngine(config)
     engine.add_data(symbol, df)
 
-    result = engine.run(strat_fn)
+    bt_result = engine.run(strat_fn)
 
     metrics_table = Table(title=f"Backtest Results: {symbol} ({strategy})")
     metrics_table.add_column("Metric", style="cyan")
     metrics_table.add_column("Value", style="white")
-    m = result.metrics
+    m = bt_result.metrics
     metrics_table.add_row("Total Return", f"[{'green' if m.total_return_pct > 0 else 'red'}]{m.total_return_pct:.2f}%[/]")
     metrics_table.add_row("Annual Return", f"{m.annual_return_pct:.2f}%")
     metrics_table.add_row("Sharpe Ratio", f"{m.sharpe_ratio:.2f}")
@@ -358,23 +390,24 @@ def chart(
     indicators: str = typer.Option("ma_5,ma_20,ma_60", help="Comma-separated indicator columns"),
 ):
     """Generate interactive K-line chart with indicators."""
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
     from stockpilot.data.adapters import Market
     from stockpilot.analysis.indicators import calculate_all_indicators
     from stockpilot.analysis.charts import create_kline_chart
 
     console.print(f"📊 Generating chart for [bold]{symbol}[/bold]...")
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
+    gateway = build_default_data_gateway()
 
-    from datetime import date, timedelta
     end = date.today()
     start = end - timedelta(days=days)
-    df = dm.get_price_history(symbol, market=Market(market), start_date=start, end_date=end)
+    result = gateway.get_price_history(
+        symbol, market=Market(market), start_date=start, end_date=end
+    )
+    _handle_error(result, symbol)
+    _warn_if_stale(result)
+    df = result.data
 
-    if df.empty:
+    if df is None or df.empty:
         console.print(f"[red]No data found for {symbol}[/red]")
         raise typer.Exit(1)
 
@@ -383,11 +416,11 @@ def chart(
     out_path = output or f"{symbol}_chart.html"
     ind_list = [i.strip() for i in indicators.split(",") if i.strip()]
 
-    result = create_kline_chart(
+    chart_result = create_kline_chart(
         df, symbol=symbol, indicators=ind_list, output_path=out_path,
     )
-    if result:
-        console.print(f"✅ Chart saved to [bold]{result}[/bold]")
+    if chart_result:
+        console.print(f"✅ Chart saved to [bold]{chart_result}[/bold]")
     else:
         console.print("[red]Chart generation failed (plotly not installed?)[/red]")
 
@@ -416,7 +449,6 @@ def portfolio(
     dm = DataManager()
     dm.register_adapter(AKShareAdapter(), priority=True)
 
-    from datetime import date, timedelta
     end = date.today()
     start = end - timedelta(days=days)
 
