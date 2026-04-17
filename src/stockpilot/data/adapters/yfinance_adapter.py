@@ -11,7 +11,13 @@ from typing import Any
 
 import pandas as pd
 
+try:
+    import yfinance as yf
+except ImportError:  # pragma: no cover - handled lazily in __init__
+    yf = None  # type: ignore[assignment]
+
 from stockpilot.data.adapters import BaseDataAdapter, Market, StockInfo, TimeFrame
+from stockpilot.data.errors import CoverageEmptyData
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +29,9 @@ class YFinanceAdapter(BaseDataAdapter):
     supported_markets = [Market.US, Market.HK, Market.GLOBAL, Market.A_SHARE]
 
     def __init__(self) -> None:
-        try:
-            import yfinance as yf
-            self._yf = yf
-        except ImportError:
+        if yf is None:
             raise ImportError("yfinance is required: pip install yfinance")
+        self._yf = yf
 
     def get_stock_list(self, market: Market = Market.US) -> pd.DataFrame:
         raise NotImplementedError("yfinance does not provide stock listings; use search() instead")
@@ -93,6 +97,8 @@ class YFinanceAdapter(BaseDataAdapter):
     def get_fundamental_data(self, symbol: str) -> dict[str, Any]:
         """Get fundamental metrics via yfinance.Ticker.info."""
         info = self._yf.Ticker(symbol).info
+        if not info:
+            raise CoverageEmptyData(f"No fundamentals coverage for {symbol}")
         return {
             "symbol": symbol,
             "pe_ratio": info.get("trailingPE"),

@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from stockpilot.data.adapters import BaseDataAdapter, Market, StockInfo, TimeFrame
+from stockpilot.data.errors import DisabledDataSourceError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ class AKShareAdapter(BaseDataAdapter):
 
     def get_stock_list(self, market: Market = Market.A_SHARE) -> pd.DataFrame:
         """Get all A-share stock listings."""
+        if market not in self.supported_markets:
+            raise DisabledDataSourceError(f"{self.name} does not support {market}")
         try:
             df = self._ak.stock_info_a_code_name()
             df.columns = ["symbol", "name"]
