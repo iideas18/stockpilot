@@ -3,6 +3,35 @@
 const API = '/api/v1';
 let bootstrapCache = { strategies: [], personas: [] };
 
+function formatApiError(detail) {
+    if (!detail || typeof detail !== 'object') {
+        return String(detail || 'Request failed');
+    }
+    const parts = [];
+    if (detail.message) parts.push(detail.message);
+    if (detail.code) parts.push(`[${detail.code}]`);
+    if (detail.retry_after_seconds != null) {
+        parts.push(`(retry in ${detail.retry_after_seconds}s)`);
+    }
+    return parts.join(' ') || 'Request failed';
+}
+
+const _dataStatusSeen = new Set();
+
+function consumeDataStatus(payload, { dedupeKey } = {}) {
+    if (!payload || !payload.data_status) return null;
+    const status = payload.data_status;
+    if (status.status === 'stale' && dedupeKey) {
+        if (_dataStatusSeen.has(dedupeKey)) return status;
+        _dataStatusSeen.add(dedupeKey);
+        const reason = status.degraded_reason || '数据源返回缓存副本';
+        if (typeof toast === 'function') {
+            toast(`数据可能过期: ${reason}`, 'error');
+        }
+    }
+    return status;
+}
+
 async function api(path, options = {}) {
     const res = await fetch(`${API}${path}`, {
         headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
@@ -10,6 +39,12 @@ async function api(path, options = {}) {
     });
     if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
+        if (err && err.detail && typeof err.detail === 'object') {
+            const message = formatApiError(err.detail);
+            const error = new Error(message);
+            error.detail = err.detail;
+            throw error;
+        }
         throw new Error(err.detail || `HTTP ${res.status}`);
     }
     return res.json();
@@ -353,6 +388,8 @@ function bindGlobalActions() {
 
 window.api = api;
 window.toast = toast;
+window.formatApiError = formatApiError;
+window.consumeDataStatus = consumeDataStatus;
 window.navigateTo = navigateTo;
 window.selectStock = selectStock;
 window.escapeHtml = escapeHtml;

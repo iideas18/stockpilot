@@ -93,6 +93,18 @@ function renderPatternSummary(summary) {
     `;
 }
 
+function renderStaleNotice(status) {
+    const grid = document.getElementById('analysis-signal');
+    if (!grid || !status || status.status !== 'stale') return;
+    const reason = status.degraded_reason || '数据源返回缓存副本';
+    const source = status.source || 'cache';
+    const notice = `<div class="metric-card col-span-full border border-amber-500/50 bg-amber-500/10 text-amber-200">
+        <div class="metric-label">数据状态</div>
+        <div class="text-sm">数据可能过期 · ${escapeHtml(source)} · ${escapeHtml(reason)}</div>
+    </div>`;
+    grid.innerHTML = notice + grid.innerHTML;
+}
+
 async function runAnalysis() {
     const symbol = document.getElementById('analysis-symbol').value.trim() || AppState.state.activeSymbol;
     if (!symbol) return toast('请输入股票代码', 'error');
@@ -100,6 +112,7 @@ async function runAnalysis() {
     const market = document.getElementById('analysis-market').value;
     const days = document.getElementById('analysis-days').value;
     const chartEl = document.getElementById('analysis-chart');
+    const patternsEl = document.getElementById('analysis-patterns');
     resetAnalysisPanels('正在加载形态信息...');
     chartEl.innerHTML = '<div class="text-center py-20 text-slate-500"><i class="fas fa-spinner fa-spin text-2xl"></i><p class="mt-2">加载中...</p></div>';
 
@@ -130,10 +143,25 @@ async function runAnalysis() {
         `).join('');
         renderPatternSummary(patterns.patterns || patterns);
         createKlineChart('analysis-chart', cleanData, symbol);
+
+        const chartStatus = consumeDataStatus(data, { dedupeKey: `analysis-chart:${symbol}:${market}` });
+        consumeDataStatus(patterns, { dedupeKey: `analysis-patterns:${symbol}:${market}` });
+        const staleStatus =
+            (chartStatus && chartStatus.status === 'stale' && chartStatus) ||
+            (patterns && patterns.data_status && patterns.data_status.status === 'stale' && patterns.data_status) ||
+            null;
+        if (staleStatus) renderStaleNotice(staleStatus);
     } catch (e) {
-        resetAnalysisPanels(`加载失败: ${e.message}`);
-        chartEl.innerHTML = `<div class="text-center py-20 text-rose-400">加载失败: ${escapeHtml(e.message)}</div>`;
-        toast(e.message, 'error');
+        const message = formatApiError(e.detail || { message: e.message });
+        const retryHint = e.detail && e.detail.retry_after_seconds
+            ? `<div class="text-xs text-amber-300 mt-2">建议 ${e.detail.retry_after_seconds}s 后重试</div>`
+            : '';
+        resetAnalysisPanels(`加载失败: ${message}`);
+        chartEl.innerHTML = `<div class="text-center py-20 text-rose-400">加载失败: ${escapeHtml(message)}${retryHint}</div>`;
+        if (patternsEl) {
+            patternsEl.innerHTML = `<div class="empty-state text-rose-400">加载失败: ${escapeHtml(message)}${retryHint}</div>`;
+        }
+        toast(message, 'error');
     }
 }
 

@@ -145,22 +145,33 @@ async def get_price_history(
     """Get historical OHLCV price data."""
     end = date.today()
     start = end - timedelta(days=days)
-    df = _load_price_history(
-        data_manager=_build_data_manager(),
+    result = _load_price_history_result(
+        gateway=_build_data_gateway(),
         symbol=symbol,
         market=market,
         start_date=start,
         end_date=end,
-        empty_detail=f"No data found for {symbol}",
     )
-    return {"symbol": symbol, "data": df.to_dict(orient="records")}
+    df = result.data
+    return {
+        "symbol": symbol,
+        "data": df.to_dict(orient="records"),
+        "data_status": _status_dict(result),
+    }
 
 
 @app.get("/api/v1/stocks/{symbol}/fundamentals")
 async def get_fundamentals(symbol: str, market: Market = Query(default=Market.A_SHARE)):
     """Get fundamental data for a stock."""
-    result = _build_data_manager().get_fundamental_data(symbol, market=market)
-    return result
+    result = _load_fundamental_result(
+        gateway=_build_data_gateway(),
+        symbol=symbol,
+        market=market,
+    )
+    payload = result.data if isinstance(result.data, dict) else {"data": result.data}
+    payload = dict(payload)
+    payload["data_status"] = _status_dict(result)
+    return payload
 
 
 # ── Analysis Routes ──
@@ -172,18 +183,22 @@ async def run_technical_analysis(req: AnalysisRequest):
 
     end = date.today()
     start = end - timedelta(days=req.days)
-    df = _load_price_history(
-        data_manager=_build_data_manager(),
+    result = _load_price_history_result(
+        gateway=_build_data_gateway(),
         symbol=req.symbol,
         market=req.market,
         start_date=start,
         end_date=end,
-        empty_detail=f"No data found for {req.symbol}",
     )
+    df = result.data
 
-    result = generate_signals(df)
-    result["signal"] = result["signal"].value
-    return {"symbol": req.symbol, "analysis": result}
+    analysis = generate_signals(df)
+    analysis["signal"] = analysis["signal"].value
+    return {
+        "symbol": req.symbol,
+        "analysis": analysis,
+        "data_status": _status_dict(result),
+    }
 
 
 @app.post("/api/v1/analysis/patterns")
@@ -193,16 +208,20 @@ async def get_patterns(req: StockQuery):
 
     end = date.today()
     start = end - timedelta(days=60)
-    df = _load_price_history(
-        data_manager=_build_data_manager(),
+    result = _load_price_history_result(
+        gateway=_build_data_gateway(),
         symbol=req.symbol,
         market=req.market,
         start_date=start,
         end_date=end,
-        empty_detail=f"No data found for {req.symbol}",
     )
+    df = result.data
 
-    return {"symbol": req.symbol, "patterns": get_pattern_summary(df)}
+    return {
+        "symbol": req.symbol,
+        "patterns": get_pattern_summary(df),
+        "data_status": _status_dict(result),
+    }
 
 
 # ── Agent Routes ──
@@ -319,6 +338,90 @@ def _build_data_manager():
     dm.register_adapter(AKShareAdapter(), priority=True)
     dm.register_adapter(YFinanceAdapter())
     return dm
+
+
+def _build_data_gateway():
+    from stockpilot.data.runtime import build_default_data_gateway
+
+    return build_default_data_gateway()
+
+
+def _status_dict(result):
+    return result.to_status_dict()
+
+
+def _not_found_envelope(*, domain: str, market, symbol: str) -> dict[str, Any]:
+    market_value = market.value if isinstance(market, Market) else str(market)
+    return {
+        "status": "not_found",
+        "code": "DATA_NOT_FOUND",
+        "message": f"No data found for {symbol}",
+        "domain": domain,
+        "market": market_value,
+        "symbol": symbol,
+        "missing_symbols": [],
+        "attempted_sources": [],
+        "cache_state": None,
+        "retry_after_seconds": None,
+        "http_status": 404,
+    }
+
+
+def _load_price_history_result(
+    *,
+    gateway,
+    symbol: str,
+    market: Market,
+    start_date,
+    end_date,
+    domain: str = "price_history",
+):
+    result = gateway.get_price_history(
+        symbol,
+        market=market,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if result.error is not None:
+        raise HTTPException(
+            status_code=result.error.http_status,
+            detail=result.error.to_dict(),
+        )
+    # Single-resource routes translate empty payloads into 404 not_found
+    from stockpilot.data.reliability.types import ResultKind
+
+    if result.result_kind == ResultKind.EMPTY:
+        raise HTTPException(
+            status_code=404,
+            detail=_not_found_envelope(
+                domain=domain, market=market, symbol=symbol
+            ),
+        )
+    return result
+
+
+def _load_fundamental_result(
+    *,
+    gateway,
+    symbol: str,
+    market: Market,
+):
+    result = gateway.get_fundamental_data(symbol, market=market)
+    if result.error is not None:
+        raise HTTPException(
+            status_code=result.error.http_status,
+            detail=result.error.to_dict(),
+        )
+    from stockpilot.data.reliability.types import ResultKind
+
+    if result.result_kind == ResultKind.EMPTY:
+        raise HTTPException(
+            status_code=404,
+            detail=_not_found_envelope(
+                domain="fundamental_data", market=market, symbol=symbol
+            ),
+        )
+    return result
 
 
 def _load_price_history(
@@ -478,18 +581,18 @@ async def get_chart_data(
     from stockpilot.analysis.indicators import calculate_all_indicators
     from stockpilot.analysis.signals import generate_signals
 
-    dm = _build_data_manager()
+    gateway = _build_data_gateway()
 
     end = date.today()
     start = end - timedelta(days=days)
-    df = _load_price_history(
-        data_manager=dm,
+    result = _load_price_history_result(
+        gateway=gateway,
         symbol=symbol,
         market=market,
         start_date=start,
         end_date=end,
-        empty_detail=f"No data found for {symbol}",
     )
+    df = result.data
 
     df = calculate_all_indicators(df)
     signals = generate_signals(df)
@@ -512,6 +615,7 @@ async def get_chart_data(
         "combined_score": signals["combined_score"],
         "indicator_scores": signals.get("indicator_scores", {}),
         "data": chart_df.to_dict(orient="records"),
+        "data_status": _status_dict(result),
     }
 
 

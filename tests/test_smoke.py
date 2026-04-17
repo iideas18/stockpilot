@@ -388,6 +388,14 @@ def test_web_dashboard():
     res = client.get("/static/js/app.js")
     assert res.status_code == 200
     assert "navigateTo" in res.text
+    assert "formatApiError" in res.text
+    assert "consumeDataStatus" in res.text
+    assert "retry_after_seconds" in res.text
+    assert "dedupeKey" in res.text
+
+    res = client.get("/static/js/analysis.js")
+    assert res.status_code == 200
+    assert ("formatApiError(" in res.text) or ("consumeDataStatus(" in res.text)
 
     # Route registration for interactive web APIs
     route_paths = {route.path for route in app.routes}

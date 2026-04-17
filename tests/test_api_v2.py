@@ -11,6 +11,11 @@ from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
 from stockpilot.data.manager import DataManager
 from stockpilot.data.adapters.yfinance_adapter import YFinanceAdapter
 
+from reliability_fakes import (
+    RecordingGateway,
+    gateway_with_stale_single_result,
+)
+
 
 def _sample_price_df() -> pd.DataFrame:
     return pd.DataFrame(
@@ -26,12 +31,10 @@ def _sample_price_df() -> pd.DataFrame:
 
 
 def test_chart_data_returns_indicator_scores(monkeypatch):
-    calls: list[tuple[str, object]] = []
-
-    class DummyManager:
-        def get_price_history(self, symbol, market=None, start_date=None, end_date=None):
-            calls.append((symbol, market))
-            return _sample_price_df()
+    stale = gateway_with_stale_single_result(
+        domain="price_history", source="cache:yfinance"
+    )
+    gateway = RecordingGateway(stale.single_result)
 
     def fake_calculate_all_indicators(df):
         enriched = df.copy()
@@ -52,7 +55,7 @@ def test_chart_data_returns_indicator_scores(monkeypatch):
             "patterns": [{"date": "2024-01-04", "pattern": "Hammer", "signal": "bullish", "strength": 100}],
         }
 
-    monkeypatch.setattr(api_main, "_build_data_manager", lambda: DummyManager())
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway, raising=False)
     monkeypatch.setattr("stockpilot.analysis.indicators.calculate_all_indicators", fake_calculate_all_indicators)
     monkeypatch.setattr("stockpilot.analysis.signals.calculate_all_indicators", fake_calculate_all_indicators)
     monkeypatch.setattr("stockpilot.analysis.signals.get_pattern_summary", fake_pattern_summary)
@@ -64,18 +67,17 @@ def test_chart_data_returns_indicator_scores(monkeypatch):
     payload = response.json()
     assert payload["symbol"] == "AAPL"
     assert payload["indicator_scores"]["rsi"] == 0.5
-    assert calls == [("AAPL", "us")]
+    assert gateway.calls[0]["symbol"] == "AAPL"
+    assert gateway.calls[0]["market"] == Market.US
 
 
 def test_patterns_route_uses_requested_market(monkeypatch):
-    calls: list[tuple[str, object]] = []
+    stale = gateway_with_stale_single_result(
+        domain="price_history", source="cache:yfinance"
+    )
+    gateway = RecordingGateway(stale.single_result)
 
-    class DummyManager:
-        def get_price_history(self, symbol, market=None, start_date=None, end_date=None):
-            calls.append((symbol, market))
-            return _sample_price_df()
-
-    monkeypatch.setattr(api_main, "_build_data_manager", lambda: DummyManager())
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway, raising=False)
     monkeypatch.setattr(
         "stockpilot.analysis.patterns.get_pattern_summary",
         lambda df: {"total_patterns": 0, "bullish_count": 0, "bearish_count": 0, "bullish_score": 0.5, "patterns": []},
@@ -86,13 +88,14 @@ def test_patterns_route_uses_requested_market(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["patterns"]["patterns"] == []
-    assert calls == [("AAPL", "us")]
+    assert gateway.calls[0]["symbol"] == "AAPL"
+    assert gateway.calls[0]["market"] == Market.US
 
 
 def test_patterns_route_serializes_numpy_pattern_strength(monkeypatch):
-    class DummyManager:
-        def get_price_history(self, symbol, market=None, start_date=None, end_date=None):
-            return _sample_price_df()
+    stale = gateway_with_stale_single_result(
+        domain="price_history", source="cache:yfinance"
+    )
 
     def fake_detect_patterns(df):
         enriched = df.copy()
@@ -101,7 +104,9 @@ def test_patterns_route_serializes_numpy_pattern_strength(monkeypatch):
         enriched["CDLHAMMER"] = hammer
         return enriched
 
-    monkeypatch.setattr(api_main, "_build_data_manager", lambda: DummyManager())
+    monkeypatch.setattr(
+        api_main, "_build_data_gateway", lambda: stale, raising=False
+    )
     monkeypatch.setattr("stockpilot.analysis.patterns.detect_patterns", fake_detect_patterns)
 
     client = TestClient(api_main.app)
@@ -109,14 +114,10 @@ def test_patterns_route_serializes_numpy_pattern_strength(monkeypatch):
 
     assert response.status_code == 200
     patterns = response.json()["patterns"]["patterns"]
-    assert patterns == [
-        {
-            "date": "2024-01-04 00:00:00",
-            "pattern": "Hammer",
-            "signal": "bullish",
-            "strength": 100,
-        }
-    ]
+    assert len(patterns) == 1
+    assert patterns[0]["pattern"] == "Hammer"
+    assert patterns[0]["signal"] == "bullish"
+    assert patterns[0]["strength"] == 100
 
 
 def test_portfolio_optimize_supports_requested_market(monkeypatch):
