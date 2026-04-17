@@ -352,14 +352,18 @@ def _status_dict(result):
     return result.to_status_dict()
 
 
+def _market_key(market) -> str:
+    """Normalize a Market enum or string to its string value."""
+    return market.value if isinstance(market, Market) else str(market)
+
+
 def _not_found_envelope(*, domain: str, market, symbol: str) -> dict[str, Any]:
-    market_value = market.value if isinstance(market, Market) else str(market)
     return ReliabilityError(
         status="not_found",
         code="DATA_NOT_FOUND",
         message=f"No data found for {symbol}",
         domain=domain,
-        market=market_value,
+        market=_market_key(market),
         symbol=symbol,
         http_status=404,
     ).to_dict()
@@ -432,8 +436,7 @@ def _load_required_price_histories(
     pairs: list[tuple[str, DataResult]] = []
     for req in requests:
         symbol, market, start_date, end_date = req[0], req[1], req[2], req[3]
-        market_key = market.value if isinstance(market, Market) else str(market)
-        key = (symbol, market_key)
+        key = (symbol, _market_key(market))
         if key in cache:
             pairs.append((symbol, cache[key]))
             continue
@@ -446,13 +449,12 @@ def _load_required_price_histories(
         # Normalize empty single-symbol result into a not_found error so
         # aggregate_route_status rejects the multi-load route.
         if result.error is None and result.result_kind == ResultKind.EMPTY:
-            market_value = market.value if isinstance(market, Market) else str(market)
             err = ReliabilityError(
                 status="not_found",
                 code="DATA_NOT_FOUND",
                 message=f"No data found for {symbol}",
                 domain="price_history",
-                market=market_value,
+                market=_market_key(market),
                 symbol=symbol,
                 attempted_sources=result.attempted_sources,
                 http_status=404,
@@ -785,16 +787,10 @@ async def compare_backtests(req: BacktestCompareRequest):
             detail=aggregated.error.to_dict(),
         )
 
-    # Map (symbol, market) -> DataResult for shared lookup
-    by_key: dict[tuple[str, str], DataResult] = {}
-    for (symbol, result), run in zip(pairs, runs_input):
-        market_key = run.market.value if isinstance(run.market, Market) else str(run.market)
-        by_key[(symbol, market_key)] = result
-
+    # ``pairs`` preserves caller order with one entry per input request, so
+    # we can zip directly against ``runs_input`` without a separate lookup.
     runs_out = []
-    for run in runs_input:
-        market_key = run.market.value if isinstance(run.market, Market) else str(run.market)
-        result = by_key[(run.symbol, market_key)]
+    for run, (_symbol, result) in zip(runs_input, pairs):
         df = result.data
         if df is None:
             raise HTTPException(

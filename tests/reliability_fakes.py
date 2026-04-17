@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -444,4 +444,116 @@ def gateway_with_compare_results() -> FakeGateway:
                 ],
             ),
         }
+    )
+
+
+# --- aggregate_route_status DataResult builders ------------------------------
+
+
+def _direct_result(
+    *,
+    status: str,
+    result_kind: ResultKind,
+    source: str,
+    served_from_cache: bool = False,
+    fetched_at: datetime | None = None,
+    age_seconds: int | None = None,
+    degraded_reason: str | None = None,
+    missing_symbols: tuple[str, ...] = (),
+    attempted_sources: tuple[dict, ...] = (),
+    error: ReliabilityError | None = None,
+    data: Any = None,
+) -> DataResult:
+    return DataResult(
+        status=status,
+        result_kind=result_kind,
+        cache_key="k",
+        source=source,
+        served_from_cache=served_from_cache,
+        fetched_at=fetched_at,
+        age_seconds=age_seconds,
+        degraded_reason=degraded_reason,
+        missing_symbols=missing_symbols,
+        attempted_sources=attempted_sources,
+        data=data,
+        error=error,
+    )
+
+
+def fresh_result(*, source: str = "yfinance") -> DataResult:
+    return _direct_result(
+        status="fresh",
+        result_kind=ResultKind.DATA,
+        source=source,
+        served_from_cache=False,
+        fetched_at=datetime(2026, 4, 17, 9, 35, tzinfo=timezone.utc),
+        age_seconds=0,
+        data={"ok": True},
+        attempted_sources=({"adapter": source, "outcome": "success"},),
+    )
+
+
+def stale_result(*, source: str = "cache:akshare", age_seconds: int = 600) -> DataResult:
+    return _direct_result(
+        status="stale",
+        result_kind=ResultKind.DATA,
+        source=source,
+        served_from_cache=True,
+        fetched_at=datetime(2026, 4, 17, 9, 25, tzinfo=timezone.utc),
+        age_seconds=age_seconds,
+        degraded_reason="live sources unavailable; serving cached payload",
+        data={"ok": True},
+        attempted_sources=({"adapter": source.split(":")[-1], "outcome": "error"},),
+    )
+
+
+def invalid_request_result() -> DataResult:
+    err = ReliabilityError(
+        status="invalid_request",
+        code="DATA_REQUEST_INVALID",
+        message="bad",
+        domain="price_history",
+        market="us",
+        http_status=400,
+    )
+    return _direct_result(
+        status="invalid_request", result_kind=ResultKind.EMPTY, source="none", error=err
+    )
+
+
+def empty_result() -> DataResult:
+    err = ReliabilityError(
+        status="not_found",
+        code="DATA_NOT_FOUND",
+        message="missing",
+        domain="price_history",
+        market="us",
+        http_status=404,
+    )
+    return _direct_result(
+        status="not_found", result_kind=ResultKind.EMPTY, source="none", error=err
+    )
+
+
+def unavailable_result() -> DataResult:
+    err = ReliabilityError(
+        status="unavailable",
+        code="DATA_SOURCE_UNAVAILABLE",
+        message="down",
+        domain="price_history",
+        market="us",
+        http_status=503,
+        retry_after_seconds=120,
+    )
+    return _direct_result(
+        status="unavailable", result_kind=ResultKind.EMPTY, source="none", error=err
+    )
+
+
+def partial_result(*, missing_symbols: list[str]) -> DataResult:
+    return _direct_result(
+        status="fresh",
+        result_kind=ResultKind.PARTIAL,
+        source="yfinance",
+        missing_symbols=tuple(missing_symbols),
     )
