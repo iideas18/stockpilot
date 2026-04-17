@@ -12,8 +12,11 @@ from reliability_fakes import (
     gateway_with_empty_result,
     gateway_with_invalid_request,
     gateway_with_invalid_required_symbol,
+    gateway_with_partial_quotes_batch,
     gateway_with_partial_required_symbol,
+    gateway_with_realtime_quotes_batch,
     gateway_with_stale_single_result,
+    gateway_with_unavailable_quotes_batch,
     gateway_with_unavailable_required_symbol,
     gateway_with_unavailable_single_result,
 )
@@ -303,3 +306,51 @@ def test_backtest_compare_success_includes_data_status(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["data_status"]["status"] == "stale"
+
+
+def test_quotes_route_returns_batch_data_status(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_realtime_quotes_batch(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/quotes", json={"symbols": ["AAA", "BBB"], "market": "us"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data_status"]["status"] == "fresh"
+    assert payload["data_status"]["result_kind"] == "data"
+    assert payload["data_status"]["source"] == "yfinance"
+    assert payload["data_status"]["missing_symbols"] == []
+    assert payload["quotes"] == [
+        {"symbol": "AAA", "price": 101.5, "change_pct": 0.42},
+        {"symbol": "BBB", "price": 57.0, "change_pct": -0.11},
+    ]
+
+
+def test_quotes_route_returns_partial_batch(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_partial_quotes_batch(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/quotes", json={"symbols": ["AAA", "BBB"], "market": "us"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data_status"]["status"] == "stale"
+    assert payload["data_status"]["result_kind"] == "partial"
+    assert payload["data_status"]["missing_symbols"] == ["BBB"]
+    assert payload["data_status"]["degraded_reason"] == "quote provider returned partial batch"
+    assert [q["symbol"] for q in payload["quotes"]] == ["AAA"]
+
+
+def test_quotes_route_maps_unavailable_to_503(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_unavailable_quotes_batch(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/quotes", json={"symbols": ["AAA", "BBB"], "market": "us"})
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["status"] == "unavailable"
+    assert detail["code"] == "DATA_SOURCE_UNAVAILABLE"
+    assert detail["domain"] == "realtime_quotes"
+    assert detail["market"] == "us"
+    assert detail["retry_after_seconds"] == 120

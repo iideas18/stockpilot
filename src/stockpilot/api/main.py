@@ -94,6 +94,11 @@ class CompareSymbolsRequest(BaseModel):
     days: int = Field(default=120, ge=1, le=3650)
 
 
+class QuotesRequest(BaseModel):
+    symbols: list[str]
+    market: str = "us"
+
+
 class BacktestCompareRunRequest(BaseModel):
     symbol: str = Field(min_length=1)
     strategy: str = Field(default="ma_crossover", min_length=1)
@@ -174,6 +179,20 @@ async def get_fundamentals(symbol: str, market: Market = Query(default=Market.A_
     payload = dict(payload)
     payload["data_status"] = _status_dict(result)
     return payload
+
+
+@app.post("/api/v1/quotes")
+def realtime_quotes(request: QuotesRequest):
+    """Batch realtime quotes for the watchlist rail."""
+    try:
+        market_enum = Market(request.market)
+    except ValueError:
+        market_enum = request.market
+    gateway = _build_data_gateway()
+    result = gateway.get_realtime_quotes(symbols=request.symbols, market=market_enum)
+    if result.error:
+        raise HTTPException(status_code=result.error.http_status, detail=result.error.to_dict())
+    return {"quotes": result.data, "data_status": result.to_status_dict()}
 
 
 # ── Analysis Routes ──

@@ -291,68 +291,218 @@ class DataGateway:
         adapter_name: str = "auto",
     ) -> DataResult:
         symbols_tuple = tuple(symbols or ())
-        request = DomainRequest(
-            domain=DomainId.REALTIME_QUOTES,
-            market=_coerce_market(market),
-            symbols=symbols_tuple,
-            cache_class=CacheClass.LIVE_QUOTE,
-            adapter_name=adapter_name or "auto",
-            require_complete=require_complete,
-        )
+        market_key = _coerce_market(market)
 
-        def fetch_live(adapter, req: DomainRequest):
-            return adapter.get_realtime_quotes(list(req.symbols))
+        # Per-symbol shield calls, preserving caller order.
+        per_symbol_pairs: list[tuple[str, DataResult]] = []
+        for sym in symbols_tuple:
+            request = DomainRequest(
+                domain=DomainId.REALTIME_QUOTES,
+                market=market_key,
+                symbol=sym,
+                symbols=(sym,),
+                cache_class=CacheClass.LIVE_QUOTE,
+                adapter_name=adapter_name or "auto",
+            )
 
-        result = self.shield.execute(request, fetch_live)
+            def fetch_live(adapter, req: DomainRequest, _sym=sym):
+                return adapter.get_realtime_quotes([_sym])
 
-        # Aggregate: handle partial batches according to require_complete.
-        if result.error is not None or result.data is None:
-            return result
+            per_symbol_pairs.append((sym, self.shield.execute(request, fetch_live)))
 
-        df = result.data
-        if not isinstance(df, pd.DataFrame):
-            return result
+        # Classify each per-symbol result as success (data) or failure.
+        successes: list[tuple[str, Any]] = []  # (symbol, quote dict)
+        missing: list[str] = []
+        attempted: list[dict[str, Any]] = []
+        errored_pairs: list[tuple[str, DataResult]] = []
 
-        returned_symbols = set()
-        if "symbol" in df.columns:
-            returned_symbols = set(str(s) for s in df["symbol"].tolist())
-        missing = tuple(s for s in symbols_tuple if s not in returned_symbols)
+        for sym, result in per_symbol_pairs:
+            attempted.extend(_tagged_sources(sym, result.attempted_sources))
+            if result.error is not None:
+                missing.append(sym)
+                errored_pairs.append((sym, result))
+                continue
 
-        if not missing:
-            return result
+            payload = result.data
+            quote: dict[str, Any] | None = None
+            if isinstance(payload, pd.DataFrame):
+                if not payload.empty:
+                    # Find row matching the symbol if present.
+                    if "symbol" in payload.columns:
+                        matches = payload[payload["symbol"].astype(str) == sym]
+                        if not matches.empty:
+                            quote = dict(matches.iloc[0].to_dict())
+                        else:
+                            quote = dict(payload.iloc[0].to_dict())
+                            quote.setdefault("symbol", sym)
+                    else:
+                        quote = dict(payload.iloc[0].to_dict())
+                        quote.setdefault("symbol", sym)
+            elif isinstance(payload, dict):
+                quote = dict(payload)
+                quote.setdefault("symbol", sym)
+            elif isinstance(payload, list) and payload:
+                first = payload[0]
+                if isinstance(first, dict):
+                    quote = dict(first)
+                    quote.setdefault("symbol", sym)
 
-        if require_complete:
+            if quote is None or result.result_kind == ResultKind.EMPTY:
+                missing.append(sym)
+            else:
+                successes.append((sym, quote))
+
+        attempted_tuple = tuple(attempted)
+
+        # All-fail path: reuse aggregate_route_status precedence.
+        if not successes:
+            if errored_pairs:
+                aggregated = aggregate_route_status(per_symbol_pairs)
+                # Overwrite domain/market with realtime_quotes specifics on 503.
+                if aggregated.error is not None:
+                    err = aggregated.error
+                    merged_err = ReliabilityError(
+                        status=err.status,
+                        code=err.code,
+                        message=err.message,
+                        domain="realtime_quotes",
+                        market=market_key,
+                        symbol=err.symbol,
+                        missing_symbols=tuple(missing),
+                        attempted_sources=err.attempted_sources,
+                        cache_state=err.cache_state,
+                        retry_after_seconds=err.retry_after_seconds,
+                        http_status=err.http_status,
+                    )
+                    return DataResult(
+                        status=aggregated.status,
+                        result_kind=aggregated.result_kind,
+                        cache_key="",
+                        source=aggregated.source,
+                        served_from_cache=aggregated.served_from_cache,
+                        fetched_at=aggregated.fetched_at,
+                        age_seconds=aggregated.age_seconds,
+                        degraded_reason=aggregated.degraded_reason,
+                        missing_symbols=tuple(missing),
+                        attempted_sources=attempted_tuple,
+                        data=None,
+                        error=merged_err,
+                    )
+                return aggregated
+
+            # No errors but no successes → treat as unavailable.
             err = ReliabilityError(
                 status="unavailable",
-                code="DATASET_INCOMPLETE",
-                message=(
-                    f"{len(missing)} of {len(symbols_tuple)} symbols missing "
-                    f"from quote batch"
-                ),
-                domain=DomainId.REALTIME_QUOTES.value,
-                market=_coerce_market(market),
-                missing_symbols=missing,
-                attempted_sources=result.attempted_sources,
+                code="DATA_SOURCE_UNAVAILABLE",
+                message="quote provider returned no data",
+                domain="realtime_quotes",
+                market=market_key,
+                missing_symbols=tuple(missing),
+                attempted_sources=attempted_tuple,
+                retry_after_seconds=120,
                 http_status=503,
             )
             return DataResult(
                 status="unavailable",
-                result_kind=ResultKind.PARTIAL,
-                cache_key=result.cache_key,
-                source=result.source,
-                served_from_cache=result.served_from_cache,
-                fetched_at=result.fetched_at,
-                age_seconds=result.age_seconds,
+                result_kind=ResultKind.EMPTY,
+                cache_key="",
+                source="none",
+                served_from_cache=False,
+                fetched_at=None,
+                age_seconds=None,
                 degraded_reason=None,
-                missing_symbols=missing,
-                attempted_sources=result.attempted_sources,
+                missing_symbols=tuple(missing),
+                attempted_sources=attempted_tuple,
+                data=None,
                 error=err,
             )
 
-        result.result_kind = ResultKind.PARTIAL
-        result.missing_symbols = missing
-        result.degraded_reason = "quote provider returned partial batch"
-        return result
+        # Aggregate metadata from successful per-symbol results.
+        success_pairs = [
+            (sym, result)
+            for sym, result in per_symbol_pairs
+            if result.error is None and sym in {s for s, _ in successes}
+        ]
+        served_from_cache = any(r.served_from_cache for _, r in success_pairs)
+        fetched_ats = [r.fetched_at for _, r in success_pairs if r.fetched_at is not None]
+        oldest_fetched_at = min(fetched_ats) if fetched_ats else None
+        ages = [r.age_seconds for _, r in success_pairs if r.age_seconds is not None]
+        max_age = max(ages) if ages else None
+        sources = {r.source for _, r in success_pairs}
+        source = next(iter(sources)) if len(sources) == 1 else "mixed"
+
+        ordered_quotes = [quote for _, quote in successes]
+
+        if missing:
+            # Partial batch
+            degraded_reason = "quote provider returned partial batch"
+            if require_complete:
+                err = ReliabilityError(
+                    status="unavailable",
+                    code="DATASET_INCOMPLETE",
+                    message=(
+                        f"{len(missing)} of {len(symbols_tuple)} symbols missing "
+                        f"from quote batch"
+                    ),
+                    domain="realtime_quotes",
+                    market=market_key,
+                    missing_symbols=tuple(missing),
+                    attempted_sources=attempted_tuple,
+                    http_status=503,
+                )
+                return DataResult(
+                    status="unavailable",
+                    result_kind=ResultKind.PARTIAL,
+                    cache_key="",
+                    source=source,
+                    served_from_cache=served_from_cache,
+                    fetched_at=oldest_fetched_at,
+                    age_seconds=max_age,
+                    degraded_reason=None,
+                    missing_symbols=tuple(missing),
+                    attempted_sources=attempted_tuple,
+                    data=None,
+                    error=err,
+                )
+            return DataResult(
+                status="stale",
+                result_kind=ResultKind.PARTIAL,
+                cache_key="",
+                source=source,
+                served_from_cache=served_from_cache,
+                fetched_at=oldest_fetched_at,
+                age_seconds=max_age,
+                degraded_reason=degraded_reason,
+                missing_symbols=tuple(missing),
+                attempted_sources=attempted_tuple,
+                data=ordered_quotes,
+                error=None,
+            )
+
+        # All successes.
+        any_stale = any(r.status == "stale" for _, r in success_pairs)
+        agg_status = "stale" if any_stale else "fresh"
+        degraded_reason = None
+        if agg_status == "stale":
+            for _, r in success_pairs:
+                if r.degraded_reason:
+                    degraded_reason = r.degraded_reason
+                    break
+
+        return DataResult(
+            status=agg_status,
+            result_kind=ResultKind.DATA,
+            cache_key="",
+            source=source,
+            served_from_cache=served_from_cache,
+            fetched_at=oldest_fetched_at,
+            age_seconds=max_age,
+            degraded_reason=degraded_reason,
+            missing_symbols=(),
+            attempted_sources=attempted_tuple,
+            data=ordered_quotes,
+            error=None,
+        )
 
     def get_fundamental_data(
         self,

@@ -392,6 +392,7 @@ def test_web_dashboard():
     assert "consumeDataStatus" in res.text
     assert "retry_after_seconds" in res.text
     assert "dedupeKey" in res.text
+    assert "refreshWatchlistQuotes" in res.text
 
     res = client.get("/static/js/analysis.js")
     assert res.status_code == 200

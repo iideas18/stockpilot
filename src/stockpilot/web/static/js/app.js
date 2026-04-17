@@ -152,6 +152,55 @@ function renderBacktestHistory() {
     `).join('');
 }
 
+async function refreshWatchlistQuotes() {
+    const rail = document.getElementById('rail-watchlist');
+    if (!rail) return;
+    const s = AppState.state;
+    if (!s.watchlist || s.watchlist.length === 0) {
+        return;
+    }
+    try {
+        const payload = await api('/quotes', {
+            method: 'POST',
+            body: JSON.stringify({
+                symbols: s.watchlist,
+                market: s.activeMarket || 'a_share',
+            }),
+        });
+        consumeDataStatus(payload, { dedupeKey: 'watchlist-quotes' });
+        const quotes = payload.quotes || [];
+        const quotesHtml = quotes.map(q => {
+            const pct = (q.change_pct != null)
+                ? `${q.change_pct > 0 ? '+' : ''}${q.change_pct}%`
+                : '';
+            const pctClass = (q.change_pct != null && q.change_pct < 0)
+                ? 'text-red-400'
+                : 'text-emerald-400';
+            return `
+                <div class="context-item">
+                    <div class="context-item-main">
+                        <div class="font-medium text-brand-300">${escapeHtml(q.symbol)}</div>
+                        <div class="context-item-sub">${escapeHtml(q.price != null ? q.price : '-')}</div>
+                    </div>
+                    <div class="${pctClass} text-sm">${escapeHtml(pct)}</div>
+                </div>
+            `;
+        }).join('');
+        const missing = (payload.data_status && payload.data_status.missing_symbols) || [];
+        const missingPanel = missing.length
+            ? `<div class="degraded-panel text-xs text-amber-300 px-2 py-1">missing: ${missing.map(escapeHtml).join(', ')}</div>`
+            : '';
+        if (quotesHtml || missingPanel) {
+            rail.innerHTML = quotesHtml + missingPanel;
+        }
+    } catch (e) {
+        if (e && e.detail) {
+            const msg = formatApiError(e.detail);
+            rail.innerHTML = `<div class="degraded-panel text-xs text-red-400 px-2 py-2">${escapeHtml(msg)}</div>`;
+        }
+    }
+}
+
 function renderAgentSessions() {
     const rail = document.getElementById('rail-agent-sessions');
     if (!AppState.state.agentSessions.length) {
@@ -206,6 +255,7 @@ function renderWorkspace() {
     renderSymbolItems('rail-basket', s.portfolioBasket, '组合候选为空。', 'basket');
     renderBacktestHistory();
     renderAgentSessions();
+    refreshWatchlistQuotes();
 
     document.getElementById('dash-watchlist-count').textContent = s.watchlist.length;
     document.getElementById('dashboard-context').innerHTML = `

@@ -294,6 +294,9 @@ class FakeGateway:
     def get_fundamental_data(self, symbol: str, **kwargs: Any) -> DataResult:
         return self.single_result
 
+    def get_realtime_quotes(self, symbols: list[str], market: str = "us", **kwargs: Any) -> DataResult:
+        return self.single_result
+
 
 class RecordingGateway:
     """Returns one canned result for any symbol and records request args."""
@@ -557,3 +560,85 @@ def partial_result(*, missing_symbols: list[str]) -> DataResult:
         source="yfinance",
         missing_symbols=tuple(missing_symbols),
     )
+
+
+# --- Realtime quotes batch fakes --------------------------------------------
+
+DEFAULT_FRESH_FETCHED_AT = "2026-04-17T09:35:00Z"
+
+
+def gateway_with_realtime_quotes_batch() -> FakeGateway:
+    result = DataResult(
+        status="fresh",
+        result_kind=ResultKind.DATA,
+        cache_key="realtime_quotes:us",
+        source="yfinance",
+        served_from_cache=False,
+        fetched_at=_parse_fetched_at(DEFAULT_FRESH_FETCHED_AT),
+        age_seconds=0,
+        degraded_reason=None,
+        missing_symbols=(),
+        attempted_sources=(
+            {"symbol": "AAA", "adapter": "yfinance", "outcome": "success"},
+            {"symbol": "BBB", "adapter": "yfinance", "outcome": "success"},
+        ),
+        data=[
+            {"symbol": "AAA", "price": 101.5, "change_pct": 0.42},
+            {"symbol": "BBB", "price": 57.0, "change_pct": -0.11},
+        ],
+        error=None,
+    )
+    return FakeGateway(single_result=result)
+
+
+def gateway_with_partial_quotes_batch() -> FakeGateway:
+    result = DataResult(
+        status="stale",
+        result_kind=ResultKind.PARTIAL,
+        cache_key="realtime_quotes:us",
+        source="yfinance",
+        served_from_cache=False,
+        fetched_at=_parse_fetched_at(DEFAULT_FETCHED_AT),
+        age_seconds=DEFAULT_STALE_AGE_SECONDS,
+        degraded_reason="quote provider returned partial batch",
+        missing_symbols=("BBB",),
+        attempted_sources=(
+            {"symbol": "AAA", "adapter": "yfinance", "outcome": "success"},
+            {"symbol": "BBB", "adapter": "yfinance", "outcome": "empty"},
+        ),
+        data=[
+            {"symbol": "AAA", "price": 101.5, "change_pct": 0.42},
+        ],
+        error=None,
+    )
+    return FakeGateway(single_result=result)
+
+
+def gateway_with_unavailable_quotes_batch() -> FakeGateway:
+    err = ReliabilityError(
+        status="unavailable",
+        code="DATA_SOURCE_UNAVAILABLE",
+        message="quote provider unavailable",
+        domain="realtime_quotes",
+        market="us",
+        symbol=None,
+        missing_symbols=("AAA", "BBB"),
+        attempted_sources=(),
+        retry_after_seconds=DEFAULT_RETRY_AFTER_SECONDS,
+        http_status=503,
+    )
+    result = DataResult(
+        status="unavailable",
+        result_kind=ResultKind.EMPTY,
+        cache_key="realtime_quotes:us",
+        source="none",
+        served_from_cache=False,
+        fetched_at=None,
+        age_seconds=None,
+        degraded_reason=None,
+        missing_symbols=("AAA", "BBB"),
+        attempted_sources=(),
+        data=None,
+        error=err,
+    )
+    return FakeGateway(single_result=result)

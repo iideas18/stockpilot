@@ -146,10 +146,16 @@ class _FundamentalsEmptyAdapter(_PriceSuccessAdapter):
 
 class _PartialQuotesAdapter(_PriceSuccessAdapter):
     def get_realtime_quotes(self, symbols):
-        # Only return the first symbol
+        # Only return data for "000001"; other symbols yield empty frames so
+        # the per-symbol gateway path classifies them as missing.
         if not symbols:
             return pd.DataFrame()
-        return pd.DataFrame([{"symbol": symbols[0], "price": 10.5}])
+        rows = [
+            {"symbol": s, "price": 10.5}
+            for s in symbols
+            if s == "000001"
+        ]
+        return pd.DataFrame(rows)
 
 
 def _build_gateway(tmp_path, adapters, source_order=None):
@@ -512,3 +518,95 @@ def test_aggregate_route_status_maps_partial_to_dataset_incomplete():
     assert status.error.status == "dataset_incomplete"
     assert status.error.code == "DATASET_INCOMPLETE"
     assert list(status.error.missing_symbols) == ["BBB"]
+
+
+# ------------------------------------------------------------------
+# Realtime quotes batch unit tests
+# ------------------------------------------------------------------
+
+
+from datetime import datetime, timezone
+
+from stockpilot.data.reliability.types import DomainRequest as _DomainRequest
+
+
+def fresh_quote_result(data_dict: dict) -> "object":
+    from stockpilot.data.reliability.types import DataResult as _DR, ResultKind as _RK
+
+    symbol = data_dict.get("symbol", "AAA")
+    return _DR(
+        status="fresh",
+        result_kind=_RK.DATA,
+        cache_key=f"realtime_quotes:{symbol}",
+        source="yfinance",
+        served_from_cache=False,
+        fetched_at=datetime(2026, 4, 17, 9, 35, tzinfo=timezone.utc),
+        age_seconds=0,
+        degraded_reason=None,
+        missing_symbols=(),
+        attempted_sources=({"adapter": "yfinance", "outcome": "success"},),
+        data={"symbol": symbol, **data_dict},
+        error=None,
+    )
+
+
+def empty_quote_result() -> "object":
+    from stockpilot.data.reliability.types import DataResult as _DR, ResultKind as _RK
+
+    return _DR(
+        status="fresh",
+        result_kind=_RK.EMPTY,
+        cache_key="realtime_quotes:empty",
+        source="yfinance",
+        served_from_cache=False,
+        fetched_at=datetime(2026, 4, 17, 9, 35, tzinfo=timezone.utc),
+        age_seconds=0,
+        degraded_reason=None,
+        missing_symbols=(),
+        attempted_sources=({"adapter": "yfinance", "outcome": "empty"},),
+        data=None,
+        error=None,
+    )
+
+
+class _FakeShield:
+    """Minimal shield stub keyed by per-symbol quote results."""
+
+    def __init__(self, quote_results: dict) -> None:
+        self.quote_results = quote_results
+
+    def execute(self, request, fetch_live):  # noqa: ARG002
+        sym = request.symbol or (request.symbols[0] if request.symbols else None)
+        return self.quote_results[sym]
+
+
+def build_gateway_with_fake_shield(*, quote_results: dict) -> DataGateway:
+    return DataGateway(shield=_FakeShield(quote_results))  # type: ignore[arg-type]
+
+
+def test_get_realtime_quotes_returns_batch_result():
+    gateway = build_gateway_with_fake_shield(
+        quote_results={
+            "AAA": fresh_quote_result({"symbol": "AAA", "price": 101.5}),
+            "BBB": fresh_quote_result({"symbol": "BBB", "price": 57.0}),
+        }
+    )
+    result = gateway.get_realtime_quotes(symbols=["AAA", "BBB"], market="us")
+    assert result.status == "fresh"
+    assert result.result_kind == ResultKind.DATA
+    assert [q["symbol"] for q in result.data] == ["AAA", "BBB"]
+    assert result.missing_symbols == ()
+
+
+def test_get_realtime_quotes_flags_partial_batch():
+    gateway = build_gateway_with_fake_shield(
+        quote_results={
+            "AAA": fresh_quote_result({"symbol": "AAA", "price": 101.5}),
+            "BBB": empty_quote_result(),
+        }
+    )
+    result = gateway.get_realtime_quotes(symbols=["AAA", "BBB"], market="us")
+    assert result.status == "stale"
+    assert result.result_kind == ResultKind.PARTIAL
+    assert list(result.missing_symbols) == ["BBB"]
+    assert result.degraded_reason == "quote provider returned partial batch"
