@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,7 +21,7 @@ _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def _utc_now_iso() -> str:
-    return datetime.utcnow().strftime(_ISO_FMT)
+    return datetime.now(timezone.utc).strftime(_ISO_FMT)
 
 
 def _parse_iso(value: str) -> datetime:
@@ -56,12 +56,13 @@ class StoredCacheEntry:
 class ReliabilityStore:
     """Persists cache entries and source-health for the reliability gateway."""
 
-    _MIN_PROBE_GAP_SECONDS = 60
-
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.stateless = False
         self._thresholds = self._load_thresholds()
+        self._min_probe_gap_seconds = max(
+            1, int(self._thresholds.get("cooldown_seconds", 120)) // 2
+        )
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             self._init_schema()
@@ -430,15 +431,17 @@ class ReliabilityStore:
             thresholds = self._thresholds
             recover_after = int(thresholds.get("recover_after_successes", 2))
 
-            if prev_state == SourceHealthState.COOLING_DOWN.value and probe_started_at:
+            if prev_state in (
+                SourceHealthState.COOLING_DOWN.value,
+                SourceHealthState.RECOVERING.value,
+            ) and successes >= recover_after:
+                state = SourceHealthState.HEALTHY.value
+                probe_started_at = None
+                cooldown_until = None
+            elif prev_state == SourceHealthState.COOLING_DOWN.value and probe_started_at:
                 state = SourceHealthState.RECOVERING.value
             elif prev_state == SourceHealthState.RECOVERING.value:
-                if successes >= recover_after:
-                    state = SourceHealthState.HEALTHY.value
-                    probe_started_at = None
-                    cooldown_until = None
-                else:
-                    state = SourceHealthState.RECOVERING.value
+                state = SourceHealthState.RECOVERING.value
             elif prev_state == SourceHealthState.DEGRADED.value:
                 state = SourceHealthState.HEALTHY.value
             elif prev_state == SourceHealthState.COOLING_DOWN.value:
@@ -478,20 +481,9 @@ class ReliabilityStore:
         try:
             row = self._get_health_row(adapter, domain, market)
             if row is None:
-                self._upsert_health(
-                    adapter,
-                    domain,
-                    market,
-                    state=SourceHealthState.HEALTHY.value,
-                    consecutive_errors=0,
-                    consecutive_successes=0,
-                    last_success_at=None,
-                    last_failure_at=None,
-                    cooldown_until=None,
-                    last_error_type=None,
-                    probe_started_at=at_iso,
-                )
-                return True
+                return False
+            if (row["state"] or "") != SourceHealthState.COOLING_DOWN.value:
+                return False
 
             probe_started_at = row["probe_started_at"]
             if probe_started_at:
@@ -500,8 +492,8 @@ class ReliabilityStore:
                         _parse_iso(at_iso) - _parse_iso(probe_started_at)
                     ).total_seconds()
                 except ValueError:
-                    gap = self._MIN_PROBE_GAP_SECONDS + 1
-                if gap < self._MIN_PROBE_GAP_SECONDS:
+                    gap = self._min_probe_gap_seconds + 1
+                if gap < self._min_probe_gap_seconds:
                     return False
 
             self._upsert_health(
