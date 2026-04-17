@@ -282,7 +282,7 @@ class ReliabilityShield:
                 return self._fresh_empty(
                     request, adapter_name, cache_key, attempted, payload=None
                 )
-            except (SourceResponseError, ConnectionError, TimeoutError, Exception) as exc:
+            except (SourceResponseError, ConnectionError, TimeoutError, OSError) as exc:
                 error_type = type(exc).__name__
                 attempted.append(
                     {"adapter": adapter_name, "outcome": "error", "error": error_type}
@@ -481,6 +481,9 @@ class ReliabilityShield:
             fetched_at=fetched_at,
             age_seconds=age,
             degraded_reason=None,
+            attempted_sources=(
+                {"adapter": cached.adapter, "outcome": "cache_hit"},
+            ),
             data=payload,
         )
 
@@ -502,6 +505,9 @@ class ReliabilityShield:
         if fetched_at is not None:
             age = int((datetime.now(tz=timezone.utc) - fetched_at).total_seconds())
         result_kind = ResultKind(cached.result_kind) if cached.result_kind in {rk.value for rk in ResultKind} else ResultKind.DATA
+        stale_attempts = tuple(attempted) + (
+            {"adapter": cached.adapter, "outcome": "stale_cache_hit"},
+        )
         return DataResult(
             status="stale",
             result_kind=result_kind,
@@ -511,7 +517,7 @@ class ReliabilityShield:
             fetched_at=fetched_at,
             age_seconds=age,
             degraded_reason="live sources unavailable; serving cached payload",
-            attempted_sources=tuple(attempted),
+            attempted_sources=stale_attempts,
             data=payload,
         )
 
