@@ -28,6 +28,143 @@ from stockpilot.data.reliability.types import (
 )
 
 
+_ERROR_PRECEDENCE = {"invalid_request": 0, "not_found": 1, "unavailable": 2}
+
+
+def _tagged_sources(symbol: str, entries: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+    tagged: list[dict[str, Any]] = []
+    for entry in entries:
+        item = dict(entry)
+        item.setdefault("symbol", symbol)
+        tagged.append(item)
+    return tagged
+
+
+def aggregate_route_status(
+    per_symbol_pairs: list[tuple[str, DataResult]],
+) -> DataResult:
+    """Aggregate per-symbol ``DataResult`` values into one route-level envelope.
+
+    Rules (spec lines 1539-1566):
+    - If any input is ``result_kind=partial`` => DATASET_INCOMPLETE (503)
+    - If any input has an error, pick by precedence: invalid_request > not_found > unavailable
+    - Otherwise fold success metadata across inputs with deterministic rules.
+    - ``attempted_sources`` is flattened with caller-supplied symbol injected.
+    """
+    attempted: list[dict[str, Any]] = []
+    for symbol, result in per_symbol_pairs:
+        attempted.extend(_tagged_sources(symbol, result.attempted_sources))
+
+    # Step 1: partial results short-circuit to DATASET_INCOMPLETE.
+    for symbol, result in per_symbol_pairs:
+        if result.result_kind == ResultKind.PARTIAL:
+            missing = tuple(result.missing_symbols)
+            err = ReliabilityError(
+                status="dataset_incomplete",
+                code="DATASET_INCOMPLETE",
+                message=f"Required dataset incomplete: missing {list(missing)}",
+                domain=(result.error.domain if result.error else "price_history"),
+                market=(result.error.market if result.error else ""),
+                symbol=symbol,
+                missing_symbols=missing,
+                attempted_sources=tuple(attempted),
+                http_status=503,
+            )
+            return DataResult(
+                status="dataset_incomplete",
+                result_kind=ResultKind.PARTIAL,
+                cache_key="",
+                source="mixed",
+                served_from_cache=False,
+                fetched_at=None,
+                age_seconds=None,
+                degraded_reason=None,
+                missing_symbols=missing,
+                attempted_sources=tuple(attempted),
+                data=None,
+                error=err,
+            )
+
+    # Step 2: errors (deterministic precedence).
+    errored = [
+        (symbol, result)
+        for symbol, result in per_symbol_pairs
+        if result.error is not None
+    ]
+    if errored:
+        errored.sort(key=lambda p: _ERROR_PRECEDENCE.get(p[1].error.status, 99))
+        symbol, result = errored[0]
+        err = result.error
+        # Rebuild the error so attempted_sources is flattened and symbol-tagged.
+        merged_err = ReliabilityError(
+            status=err.status,
+            code=err.code,
+            message=err.message,
+            domain=err.domain,
+            market=err.market,
+            symbol=err.symbol or symbol,
+            missing_symbols=err.missing_symbols,
+            attempted_sources=tuple(attempted),
+            cache_state=err.cache_state,
+            retry_after_seconds=err.retry_after_seconds,
+            http_status=err.http_status,
+        )
+        return DataResult(
+            status=err.status,
+            result_kind=ResultKind.EMPTY,
+            cache_key="",
+            source="none",
+            served_from_cache=False,
+            fetched_at=None,
+            age_seconds=None,
+            degraded_reason=None,
+            missing_symbols=err.missing_symbols,
+            attempted_sources=tuple(attempted),
+            data=None,
+            error=merged_err,
+        )
+
+    # Step 3: success aggregation.
+    served_from_cache = any(
+        result.served_from_cache for _, result in per_symbol_pairs
+    )
+    fetched_ats = [result.fetched_at for _, result in per_symbol_pairs if result.fetched_at is not None]
+    oldest_fetched_at = min(fetched_ats) if fetched_ats else None
+    ages = [result.age_seconds for _, result in per_symbol_pairs if result.age_seconds is not None]
+    max_age = max(ages) if ages else None
+
+    any_stale = any(result.status == "stale" for _, result in per_symbol_pairs)
+    agg_status = "stale" if any_stale else "fresh"
+
+    degraded_reason = None
+    if agg_status == "stale":
+        for _, result in per_symbol_pairs:
+            if result.degraded_reason:
+                degraded_reason = result.degraded_reason
+                break
+
+    sources = {result.source for _, result in per_symbol_pairs}
+    if len(sources) == 1:
+        source = next(iter(sources))
+    else:
+        source = "mixed"
+
+    return DataResult(
+        status=agg_status,
+        result_kind=ResultKind.DATA,
+        cache_key="",
+        source=source,
+        served_from_cache=served_from_cache,
+        fetched_at=oldest_fetched_at,
+        age_seconds=max_age,
+        degraded_reason=degraded_reason,
+        missing_symbols=(),
+        attempted_sources=tuple(attempted),
+        data=None,
+        error=None,
+    )
+
+
 def _coerce_market(market: Market | str) -> str:
     if isinstance(market, Market):
         return market.value

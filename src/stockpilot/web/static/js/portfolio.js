@@ -34,10 +34,22 @@ async function runPortfolioOpt() {
         })));
         const selected = responses.find(item => item.method === method) || responses[0];
 
+        const dataStatus = consumeDataStatus(selected, { dedupeKey: `portfolio:${symbols.join(',')}:${method}:${document.getElementById('pf-market') ? document.getElementById('pf-market').value : 'us'}` });
+
         document.getElementById('pf-results').classList.remove('hidden');
         createPieChart('pf-chart', Object.keys(selected.weights), Object.values(selected.weights), '配置比例');
 
-        document.getElementById('pf-metrics').innerHTML = `
+        let staleNotice = '';
+        if (dataStatus && dataStatus.status === 'stale') {
+            const reason = dataStatus.degraded_reason || '数据源返回缓存副本';
+            const source = dataStatus.source || 'cache';
+            staleNotice = `<div class="metric-card border border-amber-500/50 bg-amber-500/10 text-amber-200 mb-3">
+                <div class="metric-label">数据状态</div>
+                <div class="text-sm">数据可能过期 · ${escapeHtml(source)} · ${escapeHtml(reason)}</div>
+            </div>`;
+        }
+
+        document.getElementById('pf-metrics').innerHTML = staleNotice + `
             <div class="space-y-3 text-sm">
                 <div class="flex justify-between"><span class="text-slate-400">优化方法</span><span class="font-medium">${escapeHtml(selected.method)}</span></div>
                 <div class="flex justify-between"><span class="text-slate-400">预期收益</span><span class="font-medium ${selected.expected_return >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${(selected.expected_return * 100).toFixed(2)}%</span></div>
@@ -71,7 +83,19 @@ async function runPortfolioOpt() {
 
         toast('组合优化完成', 'success');
     } catch (e) {
-        toast(e.message, 'error');
+        const message = formatApiError(e.detail || { message: e.message });
+        const retryHint = e.detail && e.detail.retry_after_seconds
+            ? `<div class="text-xs text-amber-300 mt-2">建议 ${e.detail.retry_after_seconds}s 后重试</div>`
+            : '';
+        document.getElementById('pf-results').classList.remove('hidden');
+        const metrics = document.getElementById('pf-metrics');
+        if (metrics) {
+            metrics.innerHTML = `<div class="metric-card border border-rose-500/50 bg-rose-500/10 text-rose-200">
+                <div class="metric-label">加载失败</div>
+                <div class="text-sm">${escapeHtml(message)}${retryHint}</div>
+            </div>`;
+        }
+        toast(message, 'error');
     } finally {
         document.getElementById('pf-loading').classList.add('hidden');
     }

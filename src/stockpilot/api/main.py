@@ -18,7 +18,8 @@ from pydantic import BaseModel, Field
 
 from stockpilot.config import get_settings
 from stockpilot.data.adapters import Market
-from stockpilot.data.reliability.types import ReliabilityError, ResultKind
+from stockpilot.data.reliability.gateway import aggregate_route_status
+from stockpilot.data.reliability.types import DataResult, ReliabilityError, ResultKind
 
 logger = logging.getLogger(__name__)
 
@@ -417,6 +418,64 @@ def _load_fundamental_result(
     return result
 
 
+def _load_required_price_histories(
+    gateway,
+    requests: list[tuple],
+) -> list[tuple[str, DataResult]]:
+    """Load price history for each request, deduping by (symbol, market).
+
+    ``requests`` is a list of tuples ``(symbol, market, start_date, end_date)`` or
+    optionally with extra kwargs appended. The result preserves caller order and
+    reuses the same ``DataResult`` for repeated ``(symbol, market)`` pairs.
+    """
+    cache: dict[tuple[str, str], DataResult] = {}
+    pairs: list[tuple[str, DataResult]] = []
+    for req in requests:
+        symbol, market, start_date, end_date = req[0], req[1], req[2], req[3]
+        market_key = market.value if isinstance(market, Market) else str(market)
+        key = (symbol, market_key)
+        if key in cache:
+            pairs.append((symbol, cache[key]))
+            continue
+        result = gateway.get_price_history(
+            symbol,
+            market=market,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        # Normalize empty single-symbol result into a not_found error so
+        # aggregate_route_status rejects the multi-load route.
+        if result.error is None and result.result_kind == ResultKind.EMPTY:
+            market_value = market.value if isinstance(market, Market) else str(market)
+            err = ReliabilityError(
+                status="not_found",
+                code="DATA_NOT_FOUND",
+                message=f"No data found for {symbol}",
+                domain="price_history",
+                market=market_value,
+                symbol=symbol,
+                attempted_sources=result.attempted_sources,
+                http_status=404,
+            )
+            result = DataResult(
+                status="not_found",
+                result_kind=ResultKind.EMPTY,
+                cache_key=result.cache_key,
+                source="none",
+                served_from_cache=False,
+                fetched_at=None,
+                age_seconds=None,
+                degraded_reason=None,
+                missing_symbols=(),
+                attempted_sources=result.attempted_sources,
+                data=None,
+                error=err,
+            )
+        cache[key] = result
+        pairs.append((symbol, result))
+    return pairs
+
+
 def _load_price_history(
     *,
     data_manager,
@@ -474,6 +533,36 @@ def _serialize_backtest_result(symbol: str, strategy: str, result) -> dict[str, 
     }
 
 
+def _run_backtest_with_df(
+    *,
+    symbol: str,
+    strategy: str,
+    df,
+    start_date: str,
+    end_date: str,
+    initial_capital: float,
+) -> dict[str, Any]:
+    """Run a backtest against a pre-fetched price-history DataFrame."""
+    from stockpilot.analysis.indicators import calculate_all_indicators
+    from stockpilot.backtesting.engine import BacktestConfig, BacktestEngine
+    from stockpilot.trading.strategies.library import get_strategy
+
+    df = calculate_all_indicators(df)
+    config = BacktestConfig(
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=initial_capital,
+    )
+    engine = BacktestEngine(config)
+    engine.add_data(symbol, df)
+
+    strat_fn = get_strategy(strategy)
+    if strat_fn is None:
+        raise HTTPException(status_code=400, detail=f"Unknown strategy: {strategy}")
+    result = engine.run(strat_fn)
+    return _serialize_backtest_result(symbol, strategy, result)
+
+
 def _run_backtest_job(
     *,
     symbol: str,
@@ -522,25 +611,27 @@ async def optimize_portfolio(req: PortfolioOptRequest):
     end = date.today()
     start = end - timedelta(days=req.days)
 
-    dm = _build_data_manager()
+    gateway = _build_data_gateway()
+    requests = [(sym, req.market, start, end) for sym in req.symbols]
+    pairs = _load_required_price_histories(gateway, requests)
+    aggregated = aggregate_route_status(pairs)
+    if aggregated.error is not None:
+        raise HTTPException(
+            status_code=aggregated.error.http_status,
+            detail=aggregated.error.to_dict(),
+        )
+
     optimizer = PortfolioOptimizer(risk_free_rate=req.risk_free_rate)
-    for sym in req.symbols:
-        try:
-            df = _load_price_history(
-                data_manager=dm,
-                symbol=sym,
-                market=req.market,
-                start_date=start,
-                end_date=end,
-                empty_detail=f"No data found for {sym}",
-            )
-            if not df.empty:
-                optimizer.add_prices_df(sym, df)
-        except Exception as e:
-            logger.warning("Failed to load %s: %s", sym, e)
+    for sym, result in pairs:
+        df = result.data
+        if df is not None and hasattr(df, "empty") and not df.empty:
+            optimizer.add_prices_df(sym, df)
 
     if len(optimizer.symbols) < 2:
-        raise HTTPException(status_code=404, detail=f"Need data for ≥2 symbols, got {len(optimizer.symbols)}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Need data for ≥2 symbols, got {len(optimizer.symbols)}",
+        )
 
     methods = {
         "equal_weight": optimizer.equal_weight,
@@ -561,6 +652,7 @@ async def optimize_portfolio(req: PortfolioOptRequest):
         "risk_free_rate": req.risk_free_rate,
         "loaded_symbols": optimizer.symbols,
         "allocations": {s: round(w * req.capital, 2) for s, w in result.weights.items()},
+        "data_status": aggregated.to_status_dict(),
     }
 
 
@@ -621,31 +713,26 @@ async def compare_symbols(req: CompareSymbolsRequest):
     if len(req.symbols) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 symbols")
 
-    dm = _build_data_manager()
+    gateway = _build_data_gateway()
     end = date.today()
     start = end - timedelta(days=req.days)
 
+    symbols = req.symbols[:4]
+    requests = [(sym, req.market, start, end) for sym in symbols]
+    pairs = _load_required_price_histories(gateway, requests)
+    aggregated = aggregate_route_status(pairs)
+    if aggregated.error is not None:
+        raise HTTPException(
+            status_code=aggregated.error.http_status,
+            detail=aggregated.error.to_dict(),
+        )
+
     series = []
     summaries = []
-    load_errors = []
-    for symbol in req.symbols[:4]:
-        try:
-            df = _load_price_history(
-                data_manager=dm,
-                symbol=symbol,
-                market=req.market,
-                start_date=start,
-                end_date=end,
-                empty_detail=f"No data found for {symbol}",
-            )
-        except HTTPException as exc:
-            if exc.status_code == 404:
-                logger.info("Skipping %s in compare symbols: %s", symbol, exc.detail)
-            else:
-                logger.warning("Skipping %s in compare symbols due to upstream issue: %s", symbol, exc.detail)
-                load_errors.append(symbol)
+    for symbol, result in pairs:
+        df = result.data
+        if df is None or not hasattr(df, "empty") or df.empty:
             continue
-
         df = calculate_all_indicators(df)
         signals = generate_signals(df)
         first_close = float(df["close"].iloc[0])
@@ -667,8 +754,6 @@ async def compare_symbols(req: CompareSymbolsRequest):
         })
 
     if len(series) < 2:
-        if load_errors:
-            raise HTTPException(status_code=503, detail="Data source unavailable for one or more requested symbols")
         raise HTTPException(status_code=404, detail="Need valid data for at least 2 symbols")
 
     return {
@@ -676,6 +761,7 @@ async def compare_symbols(req: CompareSymbolsRequest):
         "days": req.days,
         "series": series,
         "summaries": summaries,
+        "data_status": aggregated.to_status_dict(),
     }
 
 
@@ -687,23 +773,52 @@ async def compare_backtests(req: BacktestCompareRequest):
 
     end = date.today()
     start = end - timedelta(days=req.days)
-    runs = []
-    for run in req.runs[:4]:
-        result = _run_backtest_job(
+
+    gateway = _build_data_gateway()
+    runs_input = req.runs[:4]
+    requests = [(run.symbol, run.market, start, end) for run in runs_input]
+    pairs = _load_required_price_histories(gateway, requests)
+    aggregated = aggregate_route_status(pairs)
+    if aggregated.error is not None:
+        raise HTTPException(
+            status_code=aggregated.error.http_status,
+            detail=aggregated.error.to_dict(),
+        )
+
+    # Map (symbol, market) -> DataResult for shared lookup
+    by_key: dict[tuple[str, str], DataResult] = {}
+    for (symbol, result), run in zip(pairs, runs_input):
+        market_key = run.market.value if isinstance(run.market, Market) else str(run.market)
+        by_key[(symbol, market_key)] = result
+
+    runs_out = []
+    for run in runs_input:
+        market_key = run.market.value if isinstance(run.market, Market) else str(run.market)
+        result = by_key[(run.symbol, market_key)]
+        df = result.data
+        if df is None:
+            raise HTTPException(
+                status_code=404,
+                detail=_not_found_envelope(
+                    domain="price_history", market=run.market, symbol=run.symbol
+                ),
+            )
+        backtest = _run_backtest_with_df(
             symbol=run.symbol,
-            market=run.market,
             strategy=run.strategy,
+            df=df,
             start_date=start.isoformat(),
             end_date=end.isoformat(),
             initial_capital=req.initial_capital,
         )
-        result["label"] = run.label or f"{run.symbol} · {run.strategy}"
-        runs.append(result)
+        backtest["label"] = run.label or f"{run.symbol} · {run.strategy}"
+        runs_out.append(backtest)
 
     return {
         "days": req.days,
         "initial_capital": req.initial_capital,
-        "runs": runs,
+        "runs": runs_out,
+        "data_status": aggregated.to_status_dict(),
     }
 
 

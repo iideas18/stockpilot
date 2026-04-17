@@ -31,6 +31,8 @@ async function runCompare() {
         });
         data.summaries.forEach(item => AppState.addCompareSymbol(item.symbol, { market }));
 
+        const dataStatus = consumeDataStatus(data, { dedupeKey: `compare:${symbols.join(',')}:${market}:${days}` });
+
         createLineComparisonChart(
             'compare-chart',
             data.series.map(item => ({ name: item.symbol, x: item.dates, y: item.normalized })),
@@ -38,7 +40,17 @@ async function runCompare() {
             '标准化价格',
         );
 
-        cards.innerHTML = data.summaries.map(item => {
+        let staleNotice = '';
+        if (dataStatus && dataStatus.status === 'stale') {
+            const reason = dataStatus.degraded_reason || '数据源返回缓存副本';
+            const source = dataStatus.source || 'cache';
+            staleNotice = `<div class="compare-card border border-amber-500/50 bg-amber-500/10 text-amber-200 md:col-span-2 xl:col-span-4">
+                <div class="text-sm font-medium mb-1">数据状态</div>
+                <div class="text-xs">数据可能过期 · ${escapeHtml(source)} · ${escapeHtml(reason)}</div>
+            </div>`;
+        }
+
+        cards.innerHTML = staleNotice + data.summaries.map(item => {
             const signalClass = item.signal === 'buy' ? 'signal-buy' : item.signal === 'sell' ? 'signal-sell' : 'signal-hold';
             return `
                 <div class="compare-card">
@@ -68,8 +80,12 @@ async function runCompare() {
             toast(`已把 ${btn.dataset.symbol} 加入组合候选`, 'success');
         }));
     } catch (e) {
-        chartEl.innerHTML = `<div class="text-center py-16 text-rose-400">${escapeHtml(e.message)}</div>`;
-        cards.innerHTML = `<div class="card text-rose-400 md:col-span-2 xl:col-span-4">${escapeHtml(e.message)}</div>`;
-        toast(e.message, 'error');
+        const message = formatApiError(e.detail || { message: e.message });
+        const retryHint = e.detail && e.detail.retry_after_seconds
+            ? `<div class="text-xs text-amber-300 mt-2">建议 ${e.detail.retry_after_seconds}s 后重试</div>`
+            : '';
+        chartEl.innerHTML = `<div class="text-center py-16 text-rose-400">${escapeHtml(message)}${retryHint}</div>`;
+        cards.innerHTML = `<div class="card text-rose-400 md:col-span-2 xl:col-span-4">${escapeHtml(message)}${retryHint}</div>`;
+        toast(message, 'error');
     }
 }

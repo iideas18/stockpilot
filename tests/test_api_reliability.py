@@ -7,9 +7,14 @@ from fastapi.testclient import TestClient
 from stockpilot.api import main as api_main
 
 from reliability_fakes import (
+    gateway_with_compare_results,
+    gateway_with_empty_required_symbol,
     gateway_with_empty_result,
     gateway_with_invalid_request,
+    gateway_with_invalid_required_symbol,
+    gateway_with_partial_required_symbol,
     gateway_with_stale_single_result,
+    gateway_with_unavailable_required_symbol,
     gateway_with_unavailable_single_result,
 )
 
@@ -182,3 +187,119 @@ def test_chart_data_maps_unavailable_to_503(monkeypatch):
     assert detail["symbol"] == "AAPL"
     assert detail["market"] == "us"
     assert detail["retry_after_seconds"] == 120
+
+
+def test_compare_route_aggregates_data_status(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_compare_results(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/compare/symbols", json={"symbols": ["AAA", "BBB"], "market": "us", "days": 60})
+
+    assert response.status_code == 200
+    ds = response.json()["data_status"]
+    assert ds["status"] == "stale"
+    assert ds["source"] == "mixed"
+    assert ds["result_kind"] == "data"
+    assert ds["served_from_cache"] is True
+    assert ds["fetched_at"] == "2026-04-17T09:25:00Z"
+    assert ds["age_seconds"] == 600
+    assert ds["degraded_reason"] == "live sources unavailable; serving cached payload"
+    assert ds["missing_symbols"] == []
+    assert ds["attempted_sources"] == [
+        {"symbol": "AAA", "adapter": "yfinance", "outcome": "success"},
+        {"symbol": "BBB", "adapter": "akshare", "outcome": "error", "reason": "ConnectionError"},
+    ]
+
+
+def test_portfolio_route_returns_503_when_required_symbol_is_unavailable(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_unavailable_required_symbol(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/portfolio/optimize", json={"symbols": ["AAA", "BBB"], "market": "us"})
+    assert response.status_code == 503
+    assert response.json()["detail"]["status"] == "unavailable"
+    assert response.json()["detail"]["code"] == "DATA_SOURCE_UNAVAILABLE"
+    assert response.json()["detail"]["symbol"] == "BBB"
+    assert response.json()["detail"]["retry_after_seconds"] == 120
+
+
+def test_compare_route_returns_404_when_required_symbol_is_empty(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_empty_required_symbol(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/compare/symbols", json={"symbols": ["AAA", "BBB"], "market": "us", "days": 60})
+    assert response.status_code == 404
+    assert response.json()["detail"]["status"] == "not_found"
+    assert response.json()["detail"]["code"] == "DATA_NOT_FOUND"
+    assert response.json()["detail"]["symbol"] == "BBB"
+
+
+def test_compare_route_preserves_invalid_request(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_invalid_required_symbol(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/compare/symbols", json={"symbols": ["AAA", "BBB"], "market": "us", "days": 60})
+    assert response.status_code == 400
+    assert response.json()["detail"]["status"] == "invalid_request"
+    assert response.json()["detail"]["code"] == "DATA_REQUEST_INVALID"
+
+
+def test_compare_route_returns_503_when_required_result_is_partial(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_partial_required_symbol(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/compare/symbols", json={"symbols": ["AAA", "BBB"], "market": "us", "days": 60})
+    assert response.status_code == 503
+    assert response.json()["detail"]["status"] == "dataset_incomplete"
+    assert response.json()["detail"]["code"] == "DATASET_INCOMPLETE"
+    assert response.json()["detail"]["missing_symbols"] == ["BBB"]
+
+
+def test_backtest_compare_returns_503_when_required_symbol_is_unavailable(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_unavailable_required_symbol(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post(
+        "/api/v1/backtest/compare",
+        json={
+            "runs": [
+                {"symbol": "AAA", "strategy": "ma_crossover", "market": "us"},
+                {"symbol": "BBB", "strategy": "ma_crossover", "market": "us"},
+            ],
+            "days": 120,
+            "initial_capital": 100000,
+        },
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["status"] == "unavailable"
+    assert response.json()["detail"]["code"] == "DATA_SOURCE_UNAVAILABLE"
+    assert response.json()["detail"]["symbol"] == "BBB"
+    assert response.json()["detail"]["retry_after_seconds"] == 120
+
+
+def test_portfolio_route_success_includes_data_status(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_compare_results(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post("/api/v1/portfolio/optimize", json={"symbols": ["AAA", "BBB"], "market": "us"})
+    assert response.status_code == 200
+    assert response.json()["data_status"]["status"] == "stale"
+
+
+def test_backtest_compare_success_includes_data_status(monkeypatch):
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_compare_results(), raising=False)
+    client = TestClient(api_main.app)
+
+    response = client.post(
+        "/api/v1/backtest/compare",
+        json={
+            "runs": [
+                {"symbol": "AAA", "strategy": "ma_crossover", "market": "us"},
+                {"symbol": "BBB", "strategy": "ma_crossover", "market": "us"},
+            ],
+            "days": 120,
+            "initial_capital": 100000,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data_status"]["status"] == "stale"

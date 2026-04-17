@@ -13,6 +13,7 @@ from stockpilot.data.adapters.yfinance_adapter import YFinanceAdapter
 
 from reliability_fakes import (
     RecordingGateway,
+    build_result,
     gateway_with_stale_single_result,
 )
 
@@ -123,12 +124,20 @@ def test_patterns_route_serializes_numpy_pattern_strength(monkeypatch):
 def test_portfolio_optimize_supports_requested_market(monkeypatch):
     calls: list[tuple[str, object]] = []
 
-    class DummyManager:
+    class DummyGateway:
         def get_price_history(self, symbol, market=None, start_date=None, end_date=None):
             calls.append((symbol, market))
-            return _sample_price_df()
+            r = build_result(
+                domain="price_history",
+                status="fresh",
+                result_kind="data",
+                source="yfinance",
+                symbol=symbol,
+            )
+            r.data = _sample_price_df()
+            return r
 
-    monkeypatch.setattr(api_main, "_build_data_manager", lambda: DummyManager())
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: DummyGateway())
 
     client = TestClient(api_main.app)
     response = client.post(
@@ -144,7 +153,7 @@ def test_portfolio_optimize_supports_requested_market(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["loaded_symbols"] == ["AAPL", "MSFT"]
-    assert calls == [("AAPL", "us"), ("MSFT", "us")]
+    assert calls == [("AAPL", Market.US), ("MSFT", Market.US)]
 
 
 def test_backtest_invalid_strategy_returns_400(monkeypatch):

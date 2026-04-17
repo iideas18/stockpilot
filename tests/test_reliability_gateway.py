@@ -14,7 +14,7 @@ from stockpilot.data.errors import (
     SourceResponseError,
 )
 from stockpilot.data.manager import DataManager
-from stockpilot.data.reliability.gateway import DataGateway
+from stockpilot.data.reliability.gateway import DataGateway, aggregate_route_status
 from stockpilot.data.reliability.registry import SourceRegistry
 from stockpilot.data.reliability.shield import ReliabilityShield, make_cache_key
 from stockpilot.data.reliability.store import ReliabilityStore, _utc_now_iso, _add_seconds
@@ -457,3 +457,155 @@ def test_build_default_data_gateway_falls_back_to_stateless_store(monkeypatch):
     )
     gateway = build_default_data_gateway()
     assert gateway.shield.store.stateless is True
+
+
+# ------------------------------------------------------------------
+# aggregate_route_status unit tests
+# ------------------------------------------------------------------
+
+
+from stockpilot.data.reliability.types import DataResult, ReliabilityError
+
+
+def _result(
+    *,
+    status: str,
+    result_kind: ResultKind,
+    source: str,
+    served_from_cache: bool = False,
+    fetched_at: datetime | None = None,
+    age_seconds: int | None = None,
+    degraded_reason: str | None = None,
+    missing_symbols: tuple[str, ...] = (),
+    attempted_sources: tuple[dict, ...] = (),
+    error: ReliabilityError | None = None,
+    data=None,
+) -> DataResult:
+    return DataResult(
+        status=status,
+        result_kind=result_kind,
+        cache_key="k",
+        source=source,
+        served_from_cache=served_from_cache,
+        fetched_at=fetched_at,
+        age_seconds=age_seconds,
+        degraded_reason=degraded_reason,
+        missing_symbols=missing_symbols,
+        attempted_sources=attempted_sources,
+        data=data,
+        error=error,
+    )
+
+
+def fresh_result(*, source: str = "yfinance") -> DataResult:
+    return _result(
+        status="fresh",
+        result_kind=ResultKind.DATA,
+        source=source,
+        served_from_cache=False,
+        fetched_at=datetime(2026, 4, 17, 9, 35, tzinfo=timezone.utc),
+        age_seconds=0,
+        data={"ok": True},
+        attempted_sources=({"adapter": source, "outcome": "success"},),
+    )
+
+
+def stale_result(*, source: str = "cache:akshare", age_seconds: int = 600) -> DataResult:
+    return _result(
+        status="stale",
+        result_kind=ResultKind.DATA,
+        source=source,
+        served_from_cache=True,
+        fetched_at=datetime(2026, 4, 17, 9, 25, tzinfo=timezone.utc),
+        age_seconds=age_seconds,
+        degraded_reason="live sources unavailable; serving cached payload",
+        data={"ok": True},
+        attempted_sources=({"adapter": source.split(":")[-1], "outcome": "error"},),
+    )
+
+
+def invalid_request_result() -> DataResult:
+    err = ReliabilityError(
+        status="invalid_request",
+        code="DATA_REQUEST_INVALID",
+        message="bad",
+        domain="price_history",
+        market="us",
+        http_status=400,
+    )
+    return _result(status="invalid_request", result_kind=ResultKind.EMPTY, source="none", error=err)
+
+
+def empty_result() -> DataResult:
+    err = ReliabilityError(
+        status="not_found",
+        code="DATA_NOT_FOUND",
+        message="missing",
+        domain="price_history",
+        market="us",
+        http_status=404,
+    )
+    return _result(status="not_found", result_kind=ResultKind.EMPTY, source="none", error=err)
+
+
+def unavailable_result() -> DataResult:
+    err = ReliabilityError(
+        status="unavailable",
+        code="DATA_SOURCE_UNAVAILABLE",
+        message="down",
+        domain="price_history",
+        market="us",
+        http_status=503,
+        retry_after_seconds=120,
+    )
+    return _result(status="unavailable", result_kind=ResultKind.EMPTY, source="none", error=err)
+
+
+def partial_result(*, missing_symbols: list[str]) -> DataResult:
+    return _result(
+        status="fresh",
+        result_kind=ResultKind.PARTIAL,
+        source="yfinance",
+        missing_symbols=tuple(missing_symbols),
+    )
+
+
+def test_aggregate_route_status_keeps_fresh_single_source_when_all_inputs_are_fresh():
+    status = aggregate_route_status(
+        [("AAA", fresh_result(source="yfinance")), ("BBB", fresh_result(source="yfinance"))]
+    )
+    assert status.status == "fresh"
+    assert status.source == "yfinance"
+    assert status.age_seconds == 0
+
+
+def test_aggregate_route_status_uses_mixed_source_and_stale_metadata():
+    status = aggregate_route_status(
+        [
+            ("AAA", fresh_result(source="yfinance")),
+            ("BBB", stale_result(source="cache:akshare", age_seconds=600)),
+        ]
+    )
+    assert status.status == "stale"
+    assert status.source == "mixed"
+    assert status.fetched_at.isoformat().startswith("2026-04-17T09:25:00")
+    assert status.age_seconds == 600
+
+
+def test_aggregate_route_status_prefers_invalid_request_over_not_found_and_unavailable():
+    status = aggregate_route_status(
+        [
+            ("AAA", invalid_request_result()),
+            ("BBB", empty_result()),
+            ("CCC", unavailable_result()),
+        ]
+    )
+    assert status.error.status == "invalid_request"
+    assert status.error.http_status == 400
+
+
+def test_aggregate_route_status_maps_partial_to_dataset_incomplete():
+    status = aggregate_route_status([("AAA", partial_result(missing_symbols=["BBB"]))])
+    assert status.error.status == "dataset_incomplete"
+    assert status.error.code == "DATASET_INCOMPLETE"
+    assert list(status.error.missing_symbols) == ["BBB"]

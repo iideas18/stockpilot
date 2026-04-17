@@ -397,6 +397,14 @@ def test_web_dashboard():
     assert res.status_code == 200
     assert ("formatApiError(" in res.text) or ("consumeDataStatus(" in res.text)
 
+    res = client.get("/static/js/compare.js")
+    assert res.status_code == 200
+    assert ("formatApiError(" in res.text) or ("consumeDataStatus(" in res.text)
+
+    res = client.get("/static/js/portfolio.js")
+    assert res.status_code == 200
+    assert ("formatApiError(" in res.text) or ("consumeDataStatus(" in res.text)
+
     # Route registration for interactive web APIs
     route_paths = {route.path for route in app.routes}
     assert "/api/v1/compare/symbols" in route_paths
@@ -410,31 +418,49 @@ def test_interactive_web_api_routes(monkeypatch):
     import pandas as pd
     from fastapi.testclient import TestClient
     from stockpilot.api import main as api_main
-    import stockpilot.data.manager as data_manager_module
+    from reliability_fakes import RecordingGateway, build_result
 
-    class DummyManager:
-        def register_adapter(self, adapter, priority=False):
-            return None
+    def _df(symbol):
+        base = {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0}.get(symbol, 15.0)
+        dates = pd.date_range("2024-01-01", periods=90, freq="D")
+        trend = np.linspace(0, 3, len(dates))
+        noise = np.sin(np.linspace(0, 6, len(dates))) * 0.5
+        close = base + trend + noise
+        return pd.DataFrame({
+            "date": dates,
+            "open": close - 0.2,
+            "high": close + 0.4,
+            "low": close - 0.5,
+            "close": close,
+            "volume": np.linspace(1000, 5000, len(dates)),
+        })
 
-        def get_price_history(self, symbol, market=None, start_date=None, end_date=None):
-            base = {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0}.get(symbol, 15.0)
-            dates = pd.date_range("2024-01-01", periods=90, freq="D")
-            trend = np.linspace(0, 3, len(dates))
-            noise = np.sin(np.linspace(0, 6, len(dates))) * 0.5
-            close = base + trend + noise
-            return pd.DataFrame({
-                "date": dates,
-                "open": close - 0.2,
-                "high": close + 0.4,
-                "low": close - 0.5,
-                "close": close,
-                "volume": np.linspace(1000, 5000, len(dates)),
-            })
+    class _PerSymbolGateway:
+        def get_price_history(self, symbol, **kwargs):
+            result = build_result(
+                domain="price_history",
+                status="fresh",
+                result_kind="data",
+                source="yfinance",
+                symbol=symbol,
+                attempted_sources=[{"adapter": "yfinance", "outcome": "success"}],
+            )
+            result.data = _df(symbol)
+            return result
 
-    def fake_build_data_manager():
-        return DummyManager()
+        def get_fundamental_data(self, symbol, **kwargs):
+            return build_result(
+                domain="fundamental_data",
+                status="fresh",
+                result_kind="data",
+                source="yfinance",
+                symbol=symbol,
+            )
 
-    def fake_run_backtest_job(**kwargs):
+    def fake_build_data_gateway():
+        return _PerSymbolGateway()
+
+    def fake_run_backtest_with_df(**kwargs):
         dates = pd.date_range("2024-01-01", periods=30, freq="D").strftime("%Y-%m-%d").tolist()
         equity = [kwargs["initial_capital"] * (1 + i * 0.01) for i in range(len(dates))]
         return {
@@ -454,9 +480,8 @@ def test_interactive_web_api_routes(monkeypatch):
             "trades": [],
         }
 
-    monkeypatch.setattr(api_main, "_build_data_manager", fake_build_data_manager)
-    monkeypatch.setattr(api_main, "_run_backtest_job", fake_run_backtest_job)
-    monkeypatch.setattr(data_manager_module, "DataManager", DummyManager)
+    monkeypatch.setattr(api_main, "_build_data_gateway", fake_build_data_gateway)
+    monkeypatch.setattr(api_main, "_run_backtest_with_df", fake_run_backtest_with_df)
 
     client = TestClient(api_main.app)
 
@@ -498,15 +523,12 @@ def test_interactive_web_api_routes(monkeypatch):
 
 
 def test_compare_symbols_handles_upstream_failures(monkeypatch):
-    """Compare route should return 503 instead of leaking upstream exceptions."""
+    """Compare route should return 503 via reliability envelope."""
     from fastapi.testclient import TestClient
     from stockpilot.api import main as api_main
+    from reliability_fakes import gateway_with_unavailable_required_symbol
 
-    class FailingManager:
-        def get_price_history(self, symbol, market=None, start_date=None, end_date=None):
-            raise RuntimeError("upstream unavailable")
-
-    monkeypatch.setattr(api_main, "_build_data_manager", lambda: FailingManager())
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_unavailable_required_symbol())
 
     client = TestClient(api_main.app)
     res = client.post("/api/v1/compare/symbols", json={
@@ -516,28 +538,30 @@ def test_compare_symbols_handles_upstream_failures(monkeypatch):
     })
 
     assert res.status_code == 503
-    assert res.json()["detail"] == "Data source unavailable for one or more requested symbols"
+    detail = res.json()["detail"]
+    assert detail["status"] == "unavailable"
+    assert detail["code"] == "DATA_SOURCE_UNAVAILABLE"
 
 
 def test_backtest_compare_handles_upstream_failures(monkeypatch):
     """Backtest compare should surface upstream data failures as 503."""
     from fastapi.testclient import TestClient
     from stockpilot.api import main as api_main
+    from reliability_fakes import gateway_with_unavailable_required_symbol
 
-    class FailingManager:
-        def get_price_history(self, symbol, market=None, start_date=None, end_date=None):
-            raise RuntimeError("upstream unavailable")
-
-    monkeypatch.setattr(api_main, "_build_data_manager", lambda: FailingManager())
+    monkeypatch.setattr(api_main, "_build_data_gateway", lambda: gateway_with_unavailable_required_symbol())
 
     client = TestClient(api_main.app)
     res = client.post("/api/v1/backtest/compare", json={
         "runs": [
             {"symbol": "AAA", "strategy": "ma_crossover", "market": "us"},
+            {"symbol": "BBB", "strategy": "ma_crossover", "market": "us"},
         ],
         "days": 120,
         "initial_capital": 100000,
     })
 
     assert res.status_code == 503
-    assert res.json()["detail"].startswith("Data source unavailable for AAA:")
+    detail = res.json()["detail"]
+    assert detail["status"] == "unavailable"
+    assert detail["code"] == "DATA_SOURCE_UNAVAILABLE"
