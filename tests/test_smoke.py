@@ -264,6 +264,19 @@ def test_risk_debate_imports():
     assert "Risk Level" in JUDGE_SYSTEM
 
 
+def test_build_default_data_gateway_imports_and_falls_back_to_stateless(monkeypatch):
+    """``build_default_data_gateway`` should import and survive a dead SQLite store."""
+    import sqlite3
+    from stockpilot.data.runtime import build_default_data_gateway
+
+    def _explode(*args, **kwargs):
+        raise sqlite3.OperationalError("boom")
+
+    monkeypatch.setattr("stockpilot.data.runtime.ReliabilityStore", _explode)
+    gateway = build_default_data_gateway()
+    assert gateway.shield.store.stateless is True
+
+
 def test_cli_commands():
     """Test CLI commands are registered."""
     from stockpilot.cli import app

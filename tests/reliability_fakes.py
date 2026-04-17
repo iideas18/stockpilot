@@ -614,6 +614,14 @@ def gateway_with_partial_quotes_batch() -> FakeGateway:
     return FakeGateway(single_result=result)
 
 
+def gateway_returning_stale_history(symbol: str = "AAPL") -> FakeGateway:
+    """Alias for :func:`gateway_returning_stale_analysis_data`.
+
+    Used by agent-tool tests that want a stale price_history gateway fake.
+    """
+    return gateway_returning_stale_analysis_data(symbol=symbol)
+
+
 def gateway_returning_stale_analysis_data(symbol: str = "AAPL") -> FakeGateway:
     """Gateway fake that returns a stale price_history DataResult with a realistic DataFrame.
 

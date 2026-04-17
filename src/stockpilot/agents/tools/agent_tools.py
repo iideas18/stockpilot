@@ -12,6 +12,27 @@ from typing import Any
 
 from langchain_core.tools import tool
 
+from stockpilot.data.runtime import build_default_data_gateway
+
+
+def _error_payload(result: Any) -> dict[str, Any] | None:
+    """Return an envelope dict if the DataResult carries an error, else None."""
+    err = getattr(result, "error", None)
+    if err is None:
+        return None
+    return {
+        "data_status": result.to_status_dict(),
+        "error": {
+            "status": err.status,
+            "code": err.code,
+            "message": err.message,
+            "domain": err.domain,
+            "market": err.market,
+            "symbol": err.symbol,
+        },
+        "data": None,
+    }
+
 
 @tool
 def get_stock_price_history(
@@ -20,93 +41,147 @@ def get_stock_price_history(
     market: str = "a_share",
 ) -> str:
     """Get historical price data for a stock. Returns OHLCV data as JSON."""
-    from stockpilot.data.adapters import Market, TimeFrame
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
-    from stockpilot.data.adapters.yfinance_adapter import YFinanceAdapter
+    from stockpilot.data.adapters import Market
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
-    dm.register_adapter(YFinanceAdapter())
+    gateway = build_default_data_gateway()
 
     end = date.today()
     start = end - timedelta(days=days)
-    mkt = Market(market)
+    result = gateway.get_price_history(
+        symbol, market=Market(market), start_date=start, end_date=end
+    )
 
-    df = dm.get_price_history(symbol, market=mkt, start_date=start, end_date=end)
-    return df.tail(30).to_json(orient="records", date_format="iso")
+    err_payload = _error_payload(result)
+    if err_payload is not None:
+        return json.dumps(err_payload, default=str)
+
+    df = result.data
+    if df is None or getattr(df, "empty", True):
+        payload = {
+            "data_status": result.to_status_dict(),
+            "data": [],
+        }
+        return json.dumps(payload, default=str)
+
+    payload = {
+        "data_status": result.to_status_dict(),
+        "data": json.loads(df.tail(30).to_json(orient="records", date_format="iso")),
+    }
+    return json.dumps(payload, default=str)
 
 
 @tool
 def get_stock_fundamentals(symbol: str, market: str = "a_share") -> str:
     """Get fundamental data (PE, PB, market cap) for a stock."""
     from stockpilot.data.adapters import Market
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
-    from stockpilot.data.adapters.yfinance_adapter import YFinanceAdapter
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
-    dm.register_adapter(YFinanceAdapter())
+    gateway = build_default_data_gateway()
+    result = gateway.get_fundamental_data(symbol, market=Market(market))
 
-    result = dm.get_fundamental_data(symbol, market=Market(market))
-    return json.dumps(result, default=str)
+    err_payload = _error_payload(result)
+    if err_payload is not None:
+        return json.dumps(err_payload, default=str)
+
+    payload = {
+        "data_status": result.to_status_dict(),
+        "data": result.data,
+    }
+    return json.dumps(payload, default=str)
 
 
 @tool
-def run_technical_analysis(symbol: str, days: int = 120) -> str:
+def run_technical_analysis(symbol: str, days: int = 120, market: str = "a_share") -> str:
     """Run full technical analysis on a stock and return signals."""
     from stockpilot.data.adapters import Market
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
     from stockpilot.analysis.signals import generate_signals
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
+    gateway = build_default_data_gateway()
 
     end = date.today()
     start = end - timedelta(days=days)
-    df = dm.get_price_history(symbol, start_date=start, end_date=end)
+    result = gateway.get_price_history(
+        symbol, market=Market(market), start_date=start, end_date=end
+    )
 
-    if df.empty:
-        return json.dumps({"error": f"No data found for {symbol}"})
+    err_payload = _error_payload(result)
+    if err_payload is not None:
+        return json.dumps(err_payload, default=str)
 
-    result = generate_signals(df)
-    result["signal"] = result["signal"].value
-    return json.dumps(result, default=str)
+    df = result.data
+    if df is None or df.empty:
+        return json.dumps(
+            {
+                "data_status": result.to_status_dict(),
+                "data": None,
+                "error": f"No data found for {symbol}",
+            },
+            default=str,
+        )
+
+    signals = generate_signals(df)
+    signals["signal"] = signals["signal"].value
+    payload = {
+        "data_status": result.to_status_dict(),
+        "data": signals,
+    }
+    return json.dumps(payload, default=str)
 
 
 @tool
-def get_pattern_analysis(symbol: str) -> str:
+def get_pattern_analysis(symbol: str, market: str = "a_share") -> str:
     """Detect K-line candlestick patterns for a stock."""
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
+    from stockpilot.data.adapters import Market
     from stockpilot.analysis.patterns import get_pattern_summary
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
+    gateway = build_default_data_gateway()
 
     end = date.today()
     start = end - timedelta(days=60)
-    df = dm.get_price_history(symbol, start_date=start, end_date=end)
+    result = gateway.get_price_history(
+        symbol, market=Market(market), start_date=start, end_date=end
+    )
 
-    if df.empty:
-        return json.dumps({"error": f"No data found for {symbol}"})
+    err_payload = _error_payload(result)
+    if err_payload is not None:
+        return json.dumps(err_payload, default=str)
 
-    result = get_pattern_summary(df)
-    return json.dumps(result, default=str)
+    df = result.data
+    if df is None or df.empty:
+        return json.dumps(
+            {
+                "data_status": result.to_status_dict(),
+                "data": None,
+                "error": f"No data found for {symbol}",
+            },
+            default=str,
+        )
+
+    summary = get_pattern_summary(df)
+    payload = {
+        "data_status": result.to_status_dict(),
+        "data": summary,
+    }
+    return json.dumps(payload, default=str)
 
 
 @tool
-def search_stock(keyword: str) -> str:
+def search_stock(keyword: str, market: str = "a_share") -> str:
     """Search for stocks by name or symbol."""
-    from stockpilot.data.manager import DataManager
-    from stockpilot.data.adapters.akshare_adapter import AKShareAdapter
+    from stockpilot.data.adapters import Market
 
-    dm = DataManager()
-    dm.register_adapter(AKShareAdapter(), priority=True)
-    results = dm.search(keyword)
-    return json.dumps([r.model_dump() for r in results[:10]], default=str)
+    gateway = build_default_data_gateway()
+    result = gateway.search(keyword, market=Market(market))
+
+    err_payload = _error_payload(result)
+    if err_payload is not None:
+        return json.dumps(err_payload, default=str)
+
+    results = result.data or []
+    payload = {
+        "data_status": result.to_status_dict(),
+        "data": [r.model_dump() for r in results[:10]],
+    }
+    return json.dumps(payload, default=str)
 
 
 ALL_AGENT_TOOLS = [
