@@ -84,6 +84,55 @@ class LLMSettings(BaseSettings):
     max_tokens: int = 4096
 
 
+def _default_source_order() -> dict[str, dict[str, list[str]]]:
+    return {
+        "price_history": {"a_share": ["akshare"], "us": ["yfinance"]},
+        "realtime_quote": {"a_share": ["akshare"], "us": ["yfinance"]},
+        "realtime_quotes": {"a_share": ["akshare"], "us": ["yfinance"]},
+        "fundamental_data": {"us": ["yfinance"]},
+        "stock_list": {"a_share": ["akshare"], "us": ["yfinance"]},
+        "search": {"a_share": ["akshare"], "us": ["yfinance"]},
+    }
+
+
+def _default_cache_windows() -> dict[str, dict[str, int]]:
+    return {
+        "live_quote": {"fresh_seconds": 15, "stale_seconds": 120},
+        "session_series": {"fresh_seconds": 60, "stale_seconds": 3600},
+        "historical_series": {"fresh_seconds": 3600, "stale_seconds": 30 * 24 * 60 * 60},
+        "reference_data": {"fresh_seconds": 3600, "stale_seconds": 7 * 24 * 60 * 60},
+    }
+
+
+def _default_health() -> dict[str, int]:
+    return {
+        "degrade_after_errors": 2,
+        "cool_down_after_errors": 3,
+        "cooldown_seconds": 120,
+        "recover_after_successes": 2,
+    }
+
+
+class ReliabilitySettings:
+    """Typed settings for the data reliability layer."""
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        sqlite_path: str | None = None,
+        source_order: dict[str, dict[str, list[str]]] | None = None,
+        cache_windows: dict[str, dict[str, int]] | None = None,
+        health: dict[str, int] | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self.sqlite_path = sqlite_path or str(
+            PROJECT_ROOT / "data" / "cache" / "stockpilot_reliability.sqlite3"
+        )
+        self.source_order = source_order if source_order is not None else _default_source_order()
+        self.cache_windows = cache_windows if cache_windows is not None else _default_cache_windows()
+        self.health = health if health is not None else _default_health()
+
+
 class DataSettings(BaseSettings):
     primary_source: str = "akshare"
     cache_backend: str = "redis"
@@ -92,6 +141,8 @@ class DataSettings(BaseSettings):
 
     alpha_vantage_api_key: str = Field(default="", alias="ALPHA_VANTAGE_API_KEY")
     tushare_token: str = Field(default="", alias="TUSHARE_TOKEN")
+
+    model_config = {"arbitrary_types_allowed": True, "extra": "allow"}
 
 
 class NewsSettings(BaseSettings):
@@ -164,7 +215,44 @@ class Settings:
             settings.cache_backend = cache_cfg["backend"]
         if "ttl_seconds" in cache_cfg:
             settings.cache_ttl_seconds = cache_cfg["ttl_seconds"]
+        settings.reliability = self._build_reliability_settings(data_cfg.get("reliability", {}))
         return settings
+
+    def _build_reliability_settings(self, cfg: dict[str, Any]) -> ReliabilitySettings:
+        rel = ReliabilitySettings()
+        if "enabled" in cfg:
+            rel.enabled = bool(cfg["enabled"])
+        if "sqlite_path" in cfg and cfg["sqlite_path"]:
+            rel.sqlite_path = str(cfg["sqlite_path"])
+        if "source_order" in cfg and isinstance(cfg["source_order"], dict):
+            merged = _default_source_order()
+            for domain, markets in cfg["source_order"].items():
+                if isinstance(markets, dict):
+                    bucket = merged.setdefault(domain, {})
+                    for market, adapters in markets.items():
+                        if isinstance(adapters, list):
+                            bucket[market] = [str(a) for a in adapters]
+            rel.source_order = merged
+        if "cache_windows" in cfg and isinstance(cfg["cache_windows"], dict):
+            merged_cw = _default_cache_windows()
+            for cls, windows in cfg["cache_windows"].items():
+                if isinstance(windows, dict):
+                    bucket = merged_cw.setdefault(cls, {})
+                    for k, v in windows.items():
+                        try:
+                            bucket[k] = int(v)
+                        except (TypeError, ValueError):
+                            continue
+            rel.cache_windows = merged_cw
+        if "health" in cfg and isinstance(cfg["health"], dict):
+            merged_h = _default_health()
+            for k, v in cfg["health"].items():
+                try:
+                    merged_h[k] = int(v)
+                except (TypeError, ValueError):
+                    continue
+            rel.health = merged_h
+        return rel
 
     def _build_news_settings(self) -> NewsSettings:
         news_cfg = self._yaml.get("news", {})

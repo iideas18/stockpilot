@@ -32,6 +32,45 @@ data:
     tushare:
       enabled: false  # Requires token
       markets: [a_share]
+  reliability:
+    enabled: true
+    # sqlite_path: defaults to <PROJECT_ROOT>/data/cache/stockpilot_reliability.sqlite3
+    source_order:
+      price_history:
+        a_share: [akshare]
+        us: [yfinance]
+      realtime_quote:
+        a_share: [akshare]
+        us: [yfinance]
+      realtime_quotes:
+        a_share: [akshare]
+        us: [yfinance]
+      fundamental_data:
+        us: [yfinance]
+      stock_list:
+        a_share: [akshare]
+        us: [yfinance]
+      search:
+        a_share: [akshare]
+        us: [yfinance]
+    cache_windows:
+      live_quote:
+        fresh_seconds: 15
+        stale_seconds: 120
+      session_series:
+        fresh_seconds: 60
+        stale_seconds: 3600
+      historical_series:
+        fresh_seconds: 3600
+        stale_seconds: 2592000  # 30 days
+      reference_data:
+        fresh_seconds: 3600
+        stale_seconds: 604800  # 7 days
+    health:
+      degrade_after_errors: 2
+      cool_down_after_errors: 3
+      cooldown_seconds: 120
+      recover_after_successes: 2
 
 # === Technical Analysis ===
 analysis:
