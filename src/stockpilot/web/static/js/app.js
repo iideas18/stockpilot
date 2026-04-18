@@ -421,7 +421,17 @@ function bindGlobalActions() {
             const run = AppState.state.agentSessions[Number(actionEl.dataset.index)];
             if (run) {
                 document.getElementById('agent-symbol').value = run.symbol;
+                if (run.market) {
+                    const marketEl = document.getElementById('agent-market');
+                    if (marketEl) marketEl.value = run.market;
+                }
                 navigateTo('agent');
+                if (run.data && typeof renderAgentReport === 'function') {
+                    renderAgentReport(run.data, { debate: !!run.debate });
+                    toast('已恢复历史报告', 'success');
+                } else {
+                    toast('该历史仅保留摘要，请重新运行分析', 'info');
+                }
             }
         }
     });

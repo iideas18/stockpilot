@@ -500,3 +500,20 @@ body {
 .prose.prose-invert hr { border: none; border-top: 1px solid rgba(71, 85, 105, 0.4); margin: 0.8em 0; }
 .prose.prose-invert > *:first-child { margin-top: 0; }
 .prose.prose-invert > *:last-child { margin-bottom: 0; }
+
+/* Agent report visual elements */
+.round-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2em 0.7em;
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(14, 165, 233, 0.2));
+    color: #c7d2fe;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border: 1px solid rgba(99, 102, 241, 0.35);
+}
+.persona-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.persona-card:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3); }
+.debate-bubble { position: relative; }
+.debate-timeline .debate-round + .debate-round { border-top: 1px dashed rgba(71, 85, 105, 0.4); padding-top: 1rem; }

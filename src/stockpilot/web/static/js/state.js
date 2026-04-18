@@ -123,10 +123,16 @@
             emit();
         },
         pushAgentSession(session) {
-            state.agentSessions = [
-                { ...session, createdAt: new Date().toISOString() },
-                ...state.agentSessions,
-            ].slice(0, 8);
+            // Keep full `data` for the top 4 sessions (so they can be reopened
+            // without re-running the LLM), strip it for older ones to keep
+            // localStorage reasonable (~50KB/session).
+            const entry = { ...session, createdAt: new Date().toISOString() };
+            const merged = [entry, ...state.agentSessions].slice(0, 8);
+            state.agentSessions = merged.map((item, idx) => {
+                if (idx < 4) return item;
+                const { data, ...rest } = item;
+                return rest;
+            });
             emit();
         },
     };
