@@ -1,0 +1,123 @@
+<h2>Section 3 — Source Health, Fallbacks & Error Contract</h2>
+<p class="subtitle">The system should not blindly retry dead sources or leak source-specific chaos upward.</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">Source health model</div>
+    <div class="mockup-body">
+      <div class="cards">
+        <div class="card">
+          <div class="card-body">
+            <h3>Healthy</h3>
+            <p>Normal priority routing</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h3>Degraded</h3>
+            <p>Still callable, but lower priority and monitored closely</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h3>Cooling down</h3>
+            <p>Temporarily skipped after repeated failures or rate-limit responses</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h3>Recovered</h3>
+            <p>Probe succeeded, source can re-enter normal rotation</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="label">Tracked per source + market + data type</div>
+        <div class="placeholder">
+          Example: <code>akshare / a_share / daily_price</code> can be unhealthy while
+          <code>yfinance / us / daily_price</code> remains healthy
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">Fallback routing policy</div>
+    <div class="mockup-body">
+      <div class="section">
+        <div class="label">Router input</div>
+        <div class="placeholder">market + instrument + request type + freshness need</div>
+      </div>
+      <div class="section">
+        <div class="label">Selection rule</div>
+        <div class="placeholder">pick highest-ranked healthy source first, then step down through ranked alternates</div>
+      </div>
+      <div class="section">
+        <div class="label">Failure response</div>
+        <div class="placeholder">increment failure count, set cooldown, record source-specific reason</div>
+      </div>
+      <div class="section">
+        <div class="label">Recovery</div>
+        <div class="placeholder">allow periodic probe or timed re-entry instead of permanent failure state</div>
+      </div>
+      <div class="section">
+        <div class="label">Important limit</div>
+        <div class="placeholder">no endless cascade; define max attempts per request to keep latency predictable</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Normalized error envelope</h3>
+  <div class="mockup">
+    <div class="mockup-header">What callers should receive</div>
+    <div class="mockup-body">
+      <div class="placeholder">
+        <strong>status:</strong> fresh | stale | unavailable<br>
+        <strong>reason:</strong> timeout | rate_limited | parse_failed | upstream_unavailable<br>
+        <strong>source_attempts:</strong> ordered list of tried sources<br>
+        <strong>retry_hint:</strong> optional cooldown / suggested retry window<br>
+        <strong>user_message:</strong> short safe message for CLI/web<br>
+        <strong>debug_message:</strong> structured technical detail for logs
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons">
+  <div class="pros">
+    <h4>Why this helps</h4>
+    <ul>
+      <li>Backtests stop failing randomly because one source blips</li>
+      <li>Web/CLI can warn about stale data honestly</li>
+      <li>Agents can reason about data confidence instead of assuming perfect inputs</li>
+    </ul>
+  </div>
+  <div class="cons">
+    <h4>What it costs</h4>
+    <ul>
+      <li>Need a source registry and health metadata store</li>
+      <li>Need explicit ranking per market and data domain</li>
+      <li>Need consistent logging so failures are diagnosable</li>
+    </ul>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve-fallbacks" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Looks right</h3>
+      <p>Continue to testing, rollout, and scope boundaries.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="revise-fallbacks" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Needs revision</h3>
+      <p>The fallback or error model should change before moving on.</p>
+    </div>
+  </div>
+</div>

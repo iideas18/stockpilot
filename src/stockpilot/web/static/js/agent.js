@@ -51,19 +51,15 @@ async function runAgentAnalysis() {
                 <div class="timeline">
                     <div class="timeline-step">
                         <div class="timeline-step-title">1. 最终决策</div>
-                        <div class="timeline-step-body">${escapeHtml(data.final_decision || '未返回最终决策')}</div>
+                        <div class="timeline-step-body prose prose-invert max-w-none">${renderMarkdown(data.final_decision || '未返回最终决策')}</div>
                     </div>
                     <div class="timeline-step">
                         <div class="timeline-step-title">2. 风险评估</div>
-                        <div class="timeline-step-body">${escapeHtml(data.risk_assessment || '未返回风险评估')}</div>
+                        <div class="timeline-step-body prose prose-invert max-w-none">${renderMarkdown(data.risk_assessment || '未返回风险评估')}</div>
                     </div>
                     <div class="timeline-step">
                         <div class="timeline-step-title">3. 技术/基本面总结</div>
-                        <div class="timeline-step-body">${escapeHtml(
-                            typeof data.technical_analysis === 'string'
-                                ? data.technical_analysis
-                                : JSON.stringify(data.technical_analysis || {}, null, 2)
-                        )}</div>
+                        <div class="timeline-step-body prose prose-invert max-w-none">${renderMarkdown(data.technical_analysis || '未返回技术分析')}</div>
                     </div>
                 </div>
             </div>
@@ -72,7 +68,7 @@ async function runAgentAnalysis() {
                     <div class="card">
                         <details open>
                             <summary class="cursor-pointer font-semibold text-purple-300">${escapeHtml(name)}</summary>
-                            <div class="timeline-step-body mt-3">${escapeHtml(analysis)}</div>
+                            <div class="timeline-step-body prose prose-invert max-w-none mt-3">${renderMarkdown(analysis)}</div>
                         </details>
                     </div>`).join('')}
             </div>
@@ -82,9 +78,9 @@ async function runAgentAnalysis() {
                     <details class="mb-2">
                         <summary class="cursor-pointer text-slate-300">第 ${round.round || '?'} 轮</summary>
                         <div class="grid grid-cols-1 gap-2 mt-3 text-sm">
-                            <div class="compare-card"><div class="font-medium text-emerald-300 mb-1">激进</div>${escapeHtml(round.aggressive || '')}</div>
-                            <div class="compare-card"><div class="font-medium text-sky-300 mb-1">保守</div>${escapeHtml(round.conservative || '')}</div>
-                            <div class="compare-card"><div class="font-medium text-slate-300 mb-1">中立</div>${escapeHtml(round.neutral || '')}</div>
+                            <div class="compare-card"><div class="font-medium text-emerald-300 mb-1">激进</div><div class="prose prose-invert prose-sm max-w-none">${renderMarkdown(round.aggressive || '')}</div></div>
+                            <div class="compare-card"><div class="font-medium text-sky-300 mb-1">保守</div><div class="prose prose-invert prose-sm max-w-none">${renderMarkdown(round.conservative || '')}</div></div>
+                            <div class="compare-card"><div class="font-medium text-slate-300 mb-1">中立</div><div class="prose prose-invert prose-sm max-w-none">${renderMarkdown(round.neutral || '')}</div></div>
                         </div>
                     </details>`).join('') : '<div class="empty-state">没有辩论记录。</div>'}
             </div>

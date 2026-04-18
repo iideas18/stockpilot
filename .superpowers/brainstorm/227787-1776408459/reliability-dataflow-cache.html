@@ -1,0 +1,122 @@
+<h2>Section 2 — Request Flow & Cache Policy</h2>
+<p class="subtitle">Recommended behavior: prefer fresh data, tolerate stale data when upstream is down, and always tell the caller what quality level it received.</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">Request lifecycle</div>
+    <div class="mockup-body">
+      <div class="section">
+        <div class="label">Step 1</div>
+        <div class="placeholder">Check in-memory cache for hot repeated reads in the same process</div>
+      </div>
+      <div class="section">
+        <div class="label">Step 2</div>
+        <div class="placeholder">Check persistent cache (SQLite/file store) by market + symbol + request shape</div>
+      </div>
+      <div class="section">
+        <div class="label">Step 3</div>
+        <div class="placeholder">If cache is fresh → return immediately</div>
+      </div>
+      <div class="section">
+        <div class="label">Step 4</div>
+        <div class="placeholder">If cache is stale → try upstream refresh through healthy sources</div>
+      </div>
+      <div class="section">
+        <div class="label">Step 5</div>
+        <div class="placeholder">If refresh succeeds → overwrite cache and return fresh</div>
+      </div>
+      <div class="section">
+        <div class="label">Step 6</div>
+        <div class="placeholder">If refresh fails but stale exists → return stale with explicit metadata</div>
+      </div>
+      <div class="section">
+        <div class="label">Step 7</div>
+        <div class="placeholder">If no data exists anywhere → return normalized unavailable error</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">Recommended cache classes</div>
+    <div class="mockup-body">
+      <div class="cards">
+        <div class="card">
+          <div class="card-body">
+            <h3>Realtime-ish quote</h3>
+            <p>TTL: 30–120s<br>Use stale only briefly</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h3>Daily OHLCV</h3>
+            <p>TTL: until next trading day close<br>Best fit for current StockPilot usage</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h3>Fundamentals / profile</h3>
+            <p>TTL: 1–7 days<br>Low refresh urgency</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h3>News / sentiment</h3>
+            <p>TTL: 15–60 min<br>Fresh enough without hammering sources</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="label">Cache record metadata</div>
+        <div class="placeholder">
+          key · source · fetched_at · expires_at · freshness_state · market · request params · schema_version
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Returned freshness contract</h3>
+  <div class="options">
+    <div class="option" data-choice="fresh">
+      <div class="letter">F</div>
+      <div class="content">
+        <h3>fresh</h3>
+        <p>Upstream fetch or non-expired cache</p>
+      </div>
+    </div>
+    <div class="option" data-choice="stale">
+      <div class="letter">S</div>
+      <div class="content">
+        <h3>stale</h3>
+        <p>Expired cache used because refresh failed or was skipped</p>
+      </div>
+    </div>
+    <div class="option" data-choice="unavailable">
+      <div class="letter">U</div>
+      <div class="content">
+        <h3>unavailable</h3>
+        <p>No acceptable data found anywhere</p>
+      </div>
+    </div>
+  </div>
+  <p class="subtitle">Callers like CLI/web/agents should surface this state instead of pretending all data is equally trustworthy.</p>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve-cache-policy" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Looks right</h3>
+      <p>Continue to source health, fallback policy, and error handling.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="revise-cache-policy" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Needs revision</h3>
+      <p>The cache rules or stale-data behavior should be changed before moving on.</p>
+    </div>
+  </div>
+</div>

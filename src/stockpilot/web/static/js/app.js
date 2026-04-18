@@ -70,6 +70,23 @@ function escapeHtml(value) {
     return div.innerHTML;
 }
 
+function renderMarkdown(value) {
+    if (value == null) return '';
+    const text = typeof value === 'string' ? value : (() => {
+        try { return '```json\n' + JSON.stringify(value, null, 2) + '\n```'; }
+        catch (_) { return String(value); }
+    })();
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+        return escapeHtml(text).replace(/\n/g, '<br>');
+    }
+    try {
+        const html = marked.parse(text, { breaks: true, gfm: true });
+        return DOMPurify.sanitize(html);
+    } catch (_) {
+        return escapeHtml(text).replace(/\n/g, '<br>');
+    }
+}
+
 function navigateTo(page) {
     document.querySelectorAll('.page').forEach(el => el.classList.add('hidden'));
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
@@ -443,6 +460,7 @@ window.consumeDataStatus = consumeDataStatus;
 window.navigateTo = navigateTo;
 window.selectStock = selectStock;
 window.escapeHtml = escapeHtml;
+window.renderMarkdown = renderMarkdown;
 window.renderWorkspace = renderWorkspace;
 window.bootstrapCache = bootstrapCache;
 

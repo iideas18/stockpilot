@@ -1,0 +1,96 @@
+<h2>Section 1 — Reliability Shield Architecture</h2>
+<p class="subtitle">Goal: make StockPilot dependable when upstream market data is flaky, without adding heavy infra.</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">Proposed request path</div>
+    <div class="mockup-body">
+      <div class="label">Callers</div>
+      <div class="mock-nav">CLI · Web · Backtest · Agent Graph · News</div>
+      <div style="text-align:center;padding:8px 0;color:#94a3b8;">↓</div>
+      <div class="label">Single entrypoint</div>
+      <div class="mock-content" style="min-height:auto">
+        <strong>Data Gateway</strong><br>
+        one place for <code>price</code>, <code>fundamentals</code>, <code>news</code>, <code>screening</code>
+      </div>
+      <div style="text-align:center;padding:8px 0;color:#94a3b8;">↓</div>
+      <div class="label">Reliability shield</div>
+      <div style="display:grid;gap:8px">
+        <div class="placeholder">1. Cache layer (SQLite/files) — fresh hit first</div>
+        <div class="placeholder">2. Source health tracker — failure counts, cooldown, recovery</div>
+        <div class="placeholder">3. Fallback router — try alternates by market/instrument</div>
+        <div class="placeholder">4. Normalized error envelope — never leak raw adapter chaos upward</div>
+      </div>
+      <div style="text-align:center;padding:8px 0;color:#94a3b8;">↓</div>
+      <div class="label">Existing adapters remain</div>
+      <div class="mock-sidebar" style="width:100%;min-height:auto">
+        AKShare · yfinance · future adapters<br>
+        wrapped, not rewritten
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">Behavior under failure</div>
+    <div class="mockup-body">
+      <div class="section">
+        <div class="label">Fresh success</div>
+        <div class="placeholder">Return fresh data + cache metadata</div>
+      </div>
+      <div class="section">
+        <div class="label">Primary source down</div>
+        <div class="placeholder">Mark source unhealthy → try fallback source</div>
+      </div>
+      <div class="section">
+        <div class="label">No source succeeds but cache exists</div>
+        <div class="placeholder">Return stale data with explicit <code>fresh/stale/unavailable</code> status</div>
+      </div>
+      <div class="section">
+        <div class="label">Nothing available</div>
+        <div class="placeholder">Return clear domain error (for example 503 data unavailable), not scattered adapter exceptions</div>
+      </div>
+      <div class="section">
+        <div class="label">Why this shape</div>
+        <div class="pros-cons">
+          <div class="pros">
+            <h4>Pros</h4>
+            <ul>
+              <li>Improves reliability everywhere at once</li>
+              <li>Preserves current adapter investment</li>
+              <li>Simple local-first operations model</li>
+            </ul>
+          </div>
+          <div class="cons">
+            <h4>Trade-off</h4>
+            <ul>
+              <li>Needs strict metadata and cache rules</li>
+              <li>Does not solve all freshness issues on day one</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Key boundary</h3>
+  <p class="subtitle">Adapters keep doing source-specific fetching. The new layer owns reliability policy, caching policy, and error normalization.</p>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve-architecture" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Looks right</h3>
+      <p>This architecture boundary makes sense. Continue to data flow and cache policy.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="revise-architecture" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Needs revision</h3>
+      <p>The layering or responsibilities feel off. Revise before moving on.</p>
+    </div>
+  </div>
+</div>
